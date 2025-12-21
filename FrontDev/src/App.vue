@@ -1,0 +1,1201 @@
+﻿<template>
+  <div class="app">
+    <!-- 左侧：历史对话 + 成员 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">智炬</div>
+        <div class="title">
+          <div class="name">智炬五维</div>
+          <div class="sub">多智能体协同学习 · 前端 Demo</div>
+        </div>
+      </div>
+
+      <!-- 历史对话 -->
+      <div class="section">
+        <div class="sectionTitle rowBetween">
+  <span>历史对话</span>
+  <button class="ghost" @click="newChat">+ 新建</button>
+</div>
+
+<input
+  class="search"
+  v-model="keyword"
+  placeholder="搜索会话…"
+/>
+
+
+        <div class="chatList">
+  <div
+    v-for="c in visibleChats"
+    :key="c.id"
+    class="chatItem"
+    :class="{ active: c.id === activeChatId }"
+  >
+    <div class="chatMain" @click="switchChat(c.id)">
+      <div class="chatTitle">{{ c.title }}</div>
+      <div class="chatMeta">
+        <span>{{ c.updatedAt }}</span>
+        <span>·</span>
+        <span>{{ c.messages.length }} 条</span>
+      </div>
+    </div>
+
+ <button
+  class="pinText"
+  :class="{ on: c.pinned }"
+  @click.stop="c.pinned = !c.pinned"
+>
+  {{ c.pinned ? '取消置顶' : '置顶' }}
+</button>
+
+  </div>
+</div>
+
+
+        <div class="exportRow">
+          <button class="topic" @click="exportCurrent('json')">导出 JSON</button>
+          <button class="topic topic2" @click="exportCurrent('txt')">导出 TXT</button>
+        </div>
+
+        <div class="hint">
+          目前为本地固定示例数据；后端接入后，把 chats/messages 替换为 API / WebSocket。
+        </div>
+      </div>
+      <!-- 左下角：用户信息 -->
+      <div class="userBar">
+        <div class="uAvatar">{{ user.short }}</div>
+        <div class="uMeta">
+          <div class="uName">{{ user.name }}</div>
+          <div class="uSub">本地演示模式</div>
+        </div>
+        <button class="gear" title="设置（占位）">⚙</button>
+      </div>
+    </aside>
+
+    <!-- 右侧：聊天区 -->
+    <main class="main">
+      <header class="topbar">
+        <div class="topicTitle">
+          <div class="big">{{ activeChat.title }}</div>
+          <div class="small">可切换历史对话 · 可导出当前会话</div>
+        </div>
+
+        <div class="status">
+          <span class="dot"></span>
+          <span>Local Demo</span>
+        </div>
+      </header>
+
+      <section class="chat">
+        <div class="timeline">
+          <div class="msg" v-for="msg in activeChat.messages" :key="msg.id" :class="{me: msg.authorId==='user'}">
+            <div class="bubble" :style="bubbleStyle(msg.authorId)" :class="{loading: msg.isLoading}">
+              <div class="head">
+                <span class="who">{{ nameOf(msg.authorId) }}</span>
+                <span class="badge" v-if="roleOf(msg.authorId)">{{ roleOf(msg.authorId) }}</span>
+                <span class="time">{{ msg.time }}</span>
+              </div>
+              <div class="content">
+                <!-- Loading状态显示 -->
+                <div v-if="msg.isLoading" class="loading-indicator">
+                  <span class="dot-bounce"></span>
+                  <span class="dot-bounce"></span>
+                  <span class="dot-bounce"></span>
+                </div>
+                <p v-else v-for="(p, i) in (msg.text || msg.content || '').split('\n')" :key="i">{{ p }}</p>
+              </div>
+              <div class="actions" v-if="!msg.isLoading">
+                <button class="mini" @click="quote(msg)">引用</button>
+                <button class="mini" @click="askAI(msg)" :disabled="isSending">让 AI 继续</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="composer">
+        <div class="quote" v-if="quoted">
+          <span class="qtag">引用</span>
+          <span class="qtext">{{ quoted }}</span>
+          <button class="qclose" @click="quoted=null">×</button>
+        </div>
+
+        <div class="inputRow">
+          <textarea
+            v-model="draft"
+            class="input"
+            rows="2"
+            placeholder="作为第五位成员插话：提问 / 反驳 / 补充 / 总结……"
+            @keydown.enter.exact.prevent="send()"
+            :disabled="isSending || isCreating"
+          />
+          <button class="send" :disabled="!draft.trim() || isSending || isCreating" @click="send">
+            {{ isSending ? '发送中...' : isCreating ? '创建中...' : '发送' }}
+          </button>
+        </div>
+
+        <div class="tips">
+          <span>Enter 发送</span><span>·</span>
+          <span>左侧切换历史会话；可导出 JSON/TXT</span>
+        </div>
+      </footer>
+    </main>
+  </div>
+</template>
+
+<script setup>
+import { computed, ref, onMounted, onUnmounted, watch } from "vue";
+import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName } from "./api.js";
+
+const user = { id: "user", name: "玿宸", short: "你" };
+const keyword = ref("");
+const members = [
+  { id: "theorist", name: "理论家", short: "理", role: "体系化", color: "#6aa7ff", desc: "梳理知识框架，把概念讲清楚、讲完整。" },
+  { id: "practitioner", name: "实践者", short: "实", role: "应用派", color: "#51d18a", desc: "用例子/代码/练习把知识落地。" },
+  { id: "skeptic", name: "质疑者", short: "疑", role: "挑错", color: "#ffcc66", desc: "挑战逻辑漏洞，逼你把问题说清楚。" },
+  { id: "facilitator", name: "组织者", short: "组", role: "主持", color: "#c77dff", desc: "控节奏、提炼结论、分配任务。" },
+];
+
+// ========== 后端模式标志 ==========
+const useBackend = ref(true);  // 设为 false 可切换回本地mock模式
+
+// ========== 对话数据 ==========
+const chats = ref([]);
+const loading = ref(false);
+const error = ref(null);
+
+// ========== Loading状态 ==========
+const isSending = ref(false);  // 正在发送消息/AI正在思考
+const isCreating = ref(false);  // 正在创建对话
+
+// ========== WebSocket 管理 ==========
+let currentWsHandler = null;
+
+// ========== 初始化加载 ==========
+onMounted(async () => {
+  if (useBackend.value) {
+    await loadChats();
+  } else {
+    // 使用本地mock数据
+    chats.value = getMockChats();
+  }
+});
+
+onUnmounted(() => {
+  // 断开所有WebSocket连接
+  apiClient.disconnectAll();
+});
+
+// ========== API 调用函数 ==========
+async function loadChats() {
+  loading.value = true;
+  error.value = null;
+  try {
+    const result = await apiClient.getChats(keyword.value);
+    // 转换后端数据格式为前端格式
+    chats.value = result.chats.map(chat => ({
+      id: chat.id,
+      title: chat.title,
+      pinned: chat.pinned || false,
+      updatedAt: chat.updatedAt,
+      messages: chat.messages || [],
+    }));
+  } catch (err) {
+    console.error('加载对话列表失败:', err);
+    error.value = err.message;
+    // 如果后端不可用，回退到本地mock
+    if (err.message.includes('fetch')) {
+      console.log('后端不可用，使用本地mock数据');
+      useBackend.value = false;
+      chats.value = getMockChats();
+    }
+  } finally {
+    loading.value = false;
+  }
+}
+
+async function createChat(topic) {
+  try {
+    const result = await apiClient.createChat(topic);
+    // 后端现在返回完整的对话信息，包括消息
+    const newChat = {
+      id: result.chat_id,
+      title: result.title,
+      pinned: false,
+      updatedAt: result.updated_at,
+      messages: result.messages.map(msg => ({
+        id: msg.message_id || msg.id,
+        authorId: msg.author_id,
+        author_name: msg.author_name,
+        text: msg.content,
+        content: msg.content,
+        time: msg.timestamp,
+        role: msg.role
+      })),
+    };
+    // 添加到聊天列表
+    chats.value = [newChat, ...chats.value];
+    return result.chat_id;
+  } catch (err) {
+    console.error('创建对话失败:', err);
+    throw err;
+  }
+}
+
+async function sendMessage(chatId, content, action = 'send') {
+  try {
+    const result = await apiClient.sendMessage(chatId, content, action);
+    // 后端返回完整的消息列表，更新本地chat
+    const chat = chats.value.find(c => c.id === chatId);
+    if (chat && result.messages) {
+      // 将后端消息格式转换为前端格式
+      chat.messages = result.messages.map(msg => ({
+        id: msg.message_id || msg.id,
+        authorId: msg.author_id,
+        author_name: msg.author_name,
+        text: msg.content,
+        content: msg.content,
+        time: msg.timestamp,
+        role: msg.role
+      }));
+      chat.updatedAt = result.updated_at || stamp();
+    }
+    return result;
+  } catch (err) {
+    console.error('发送消息失败:', err);
+    throw err;
+  }
+}
+
+async function continueChat(chatId) {
+  try {
+    const result = await apiClient.continueChat(chatId);
+    // 后端返回完整的消息列表，更新本地chat
+    const chat = chats.value.find(c => c.id === chatId);
+    if (chat && result.messages) {
+      // 将后端消息格式转换为前端格式
+      chat.messages = result.messages.map(msg => ({
+        id: msg.message_id || msg.id,
+        authorId: msg.author_id,
+        author_name: msg.author_name,
+        text: msg.content,
+        content: msg.content,
+        time: msg.timestamp,
+        role: msg.role
+      }));
+      chat.updatedAt = result.updated_at || stamp();
+    }
+    return result;
+  } catch (err) {
+    console.error('继续对话失败:', err);
+    throw err;
+  }
+}
+
+// ========== WebSocket 消息处理 ==========
+function setupWebSocket(chatId) {
+  apiClient.connectWebSocket(
+    chatId,
+    (data) => {
+      // 处理收到的消息
+      if (data.type === 'message') {
+        const chat = chats.value.find(c => c.id === chatId);
+        if (chat && !chat.messages.find(m => m.message_id === data.data.message_id)) {
+          chat.messages.push({
+            id: data.data.message_id,
+            authorId: data.data.author_id,
+            author_name: data.data.author_name,
+            text: data.data.content,
+            time: data.data.timestamp,
+          });
+          chat.updatedAt = stamp();
+        }
+      }
+    },
+    (err) => {
+      console.error('WebSocket错误:', err);
+    }
+  );
+}
+
+// ========== Mock 数据生成（用于本地模式） ==========
+function seedChat(title, lines) {
+  return {
+    id: uid(),
+    title,
+    pinned: false,
+    updatedAt: stamp(),
+    messages: lines.map((x) => ({ id: uid(), ...x })),
+  };
+}
+
+function getMockChats() {
+  return [
+    seedChat("主题：二分查找怎么学？", [
+      { authorId: "facilitator", time: "14:10", text: "我们做一个高质量小组讨论：如何高效学习二分查找？\n先框架，再例子，最后总结易错点。" },
+      { authorId: "theorist", time: "14:11", text: "核心：单调性 + 不变式。\n你要明确区间定义：[l,r] 或 [l,r)。" },
+      { authorId: "skeptic", time: "14:12", text: "我就问一句：你怎么保证不死循环？\nmid 偏左还是偏右？while 条件是什么？" },
+      { authorId: "practitioner", time: "14:13", text: "先把一种写法练到肌肉记忆，再迁移。\n给你 3 道题：找值、找左边界、找右边界。" },
+    ]),
+
+    seedChat("主题：英语六级阅读怎么提速？", [
+      { authorId: "facilitator", time: "13:40", text: "目标：提速不等于瞎猜。\n我们用结构化阅读：主旨句+转折+指代。" },
+      { authorId: "theorist", time: "13:41", text: "阅读速度的瓶颈通常不是词汇，而是句子结构。\n建议先训练：并列/从句拆分。" },
+      { authorId: "practitioner", time: "13:42", text: "练法：每篇文章只做两件事：\n1) 画出段落主题句 2) 标记转折词（however/but）。" },
+    ]),
+
+    seedChat("主题：多智能体学习系统怎么设计？", [
+      { authorId: "facilitator", time: "12:05", text: "我们先定义最小闭环：角色→发言→总结→追问。\n前端先 mock，后端再接入。" },
+      { authorId: "skeptic", time: "12:06", text: "关键问题：多角色同时输出会不会互相打架？\n需要仲裁器/轮次控制。" },
+      { authorId: "theorist", time: "12:07", text: "信息结构要固定：观点/证据/反例/结论。\n前端最好支持引用与回溯。" },
+    ]),
+  ];
+}
+const visibleChats = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+
+  let list = chats.value.filter((c) => {
+    if (!kw) return true;
+    if (c.title.toLowerCase().includes(kw)) return true;
+    const last = c.messages[c.messages.length - 1];
+    const lastText = last?.text || last?.content || '';
+    return lastText.toLowerCase().includes(kw);
+  });
+
+  // 置顶的在前，其余按更新时间
+  list.sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return b.updatedAt.localeCompare(a.updatedAt);
+  });
+
+  return list;
+});
+
+
+// ========== 当前对话相关 ==========
+const activeChatId = ref(null);
+const draft = ref("");
+const quoted = ref(null);
+
+const activeChat = computed(() => {
+  if (chats.value.length === 0) {
+    // 返回一个空的默认对话对象
+    return {
+      id: 'empty',
+      title: '暂无对话',
+      pinned: false,
+      updatedAt: stamp(),
+      messages: []
+    };
+  }
+  if (!activeChatId.value && chats.value.length > 0) {
+    activeChatId.value = chats.value[0].id;
+  }
+  return chats.value.find((c) => c.id === activeChatId.value) || chats.value[0];
+});
+
+// ========== 监听当前对话变化，建立WebSocket连接 ==========
+watch(activeChatId, (newId, oldId) => {
+  if (useBackend.value && newId) {
+    setupWebSocket(newId);
+  }
+});
+
+function nameOf(id) {
+  if (id === "user") return user.name;
+  if (id === "ai-loading") return "";
+  return members.find((m) => m.id === id)?.name || id;
+}
+function roleOf(id) {
+  if (id === "user") return "用户";
+  return members.find((m) => m.id === id)?.role || "";
+}
+function bubbleStyle(authorId) {
+  if (authorId === "user") return { borderColor: "#ffffff55", background: "rgba(255,255,255,.08)" };
+  const m = members.find((x) => x.id === authorId);
+  return { borderColor: (m?.color || "#6aa7ff") + "66" };
+}
+
+function switchChat(id) {
+  activeChatId.value = id;
+  quoted.value = null;
+  draft.value = "";
+}
+
+function newChat() {
+  if (useBackend.value) {
+    // 后端模式：提示用户输入话题
+    const topic = prompt("请输入讨论话题：");
+    if (topic) {
+      createChat(topic).then(chatId => {
+        activeChatId.value = chatId;
+      }).catch(err => {
+        alert('创建对话失败: ' + err.message);
+      });
+    }
+  } else {
+    // 本地模式：创建mock对话
+    const c = seedChat("新对话（示例）", [
+      { authorId: "facilitator", time: now(), text: "这是一个新会话的占位示例。\n后端接入后，这里会由服务端创建会话。" },
+    ]);
+    chats.value = [c, ...chats.value];
+    activeChatId.value = c.id;
+  }
+}
+
+function push(authorId, text) {
+  const c = activeChat.value;
+  if (!c) return;
+  c.messages.push({ id: uid(), authorId, text, time: now() });
+  c.updatedAt = stamp();
+}
+
+async function send() {
+  const text = draft.value.trim();
+  if (!text || isSending.value || isCreating.value) return;
+
+  // 检查是否为 /end 命令
+  if (text.toLowerCase() === '/end') {
+    if (!activeChat.value || activeChat.value.id === 'empty') {
+      alert('请先选择一个对话');
+      return;
+    }
+    draft.value = "";
+    quoted.value = null;
+
+    if (useBackend.value) {
+      try {
+        await sendMessage(activeChat.value.id, '', 'end');
+      } catch (err) {
+        console.error('生成总结失败:', err);
+      }
+    }
+    return;
+  }
+
+  // 如果没有活跃对话或对话为空，创建新对话
+  if (!activeChat.value || activeChat.value.id === 'empty') {
+    draft.value = "";
+    quoted.value = null;
+
+    if (useBackend.value) {
+      isCreating.value = true;
+      try {
+        // 先在前端显示用户消息（乐观更新）
+        const tempId = uid();
+        const newChat = {
+          id: tempId,
+          title: `主题：${text}`,
+          pinned: false,
+          updatedAt: stamp(),
+          messages: [
+            { id: uid(), authorId: "user", author_name: "用户", text, content: text, time: now(), role: "用户" },
+            { id: uid(), authorId: "facilitator", author_name: "组织者", text: "正在组织讨论...", content: "正在组织讨论...", time: now(), role: "组织者", isLoading: true }
+          ],
+        };
+        chats.value = [newChat, ...chats.value];
+        activeChatId.value = tempId;
+
+        // 异步创建对话并获取真实响应
+        const result = await apiClient.createChat(text);
+        const realChat = {
+          id: result.chat_id,
+          title: result.title,
+          pinned: false,
+          updatedAt: result.updated_at,
+          messages: result.messages.map(msg => ({
+            id: msg.message_id || msg.id,
+            authorId: msg.author_id,
+            author_name: msg.author_name,
+            text: msg.content,
+            content: msg.content,
+            time: msg.timestamp,
+            role: msg.role
+          })),
+        };
+
+        // 替换临时对话为真实对话
+        const idx = chats.value.findIndex(c => c.id === tempId);
+        if (idx !== -1) {
+          chats.value[idx] = realChat;
+          activeChatId.value = realChat.id;
+        }
+      } catch (err) {
+        console.error('创建对话失败:', err);
+        // 创建失败时移除临时对话
+        chats.value = chats.value.filter(c => c.id !== activeChatId.value);
+        alert('创建对话失败: ' + err.message);
+      } finally {
+        isCreating.value = false;
+      }
+    } else {
+      // 本地模式：创建新对话
+      const c = seedChat(`主题：${text}`, [
+        { authorId: "user", time: now(), text }
+      ]);
+      chats.value = [c, ...chats.value];
+      activeChatId.value = c.id;
+      setTimeout(() => {
+        push("facilitator", "（本地演示）让我们开始讨论这个话题。");
+      }, 500);
+    }
+    return;
+  }
+
+  // 正常发送消息 - 乐观更新：立即显示用户消息
+  const chat = activeChat.value;
+  draft.value = "";
+  quoted.value = null;
+
+  if (useBackend.value) {
+    isSending.value = true;
+    try {
+      // 1. 立即在前端添加用户消息
+      const userMsg = {
+        id: uid(),
+        authorId: "user",
+        author_name: "用户",
+        text: text,
+        content: text,
+        time: now(),
+        role: "用户"
+      };
+      chat.messages.push(userMsg);
+      chat.updatedAt = stamp();
+
+      // 2. 添加"正在思考"的占位消息
+      const loadingMsg = {
+        id: uid(),
+        authorId: "ai-loading",
+        author_name: "",
+        text: "正在思考...",
+        content: "正在思考...",
+        time: now(),
+        role: "",
+        isLoading: true
+      };
+      chat.messages.push(loadingMsg);
+
+      // 3. 异步调用后端获取AI响应
+      const result = await apiClient.sendMessage(chat.id, text, 'send');
+
+      // 4. 移除loading消息，替换为真实AI响应
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+
+      // 5. 添加AI响应（只添加后端返回的新消息）
+      if (result.messages && result.messages.length > 0) {
+        // 找出本地已有的消息ID
+        const existingIds = new Set(chat.messages.map(m => m.id));
+
+        // 只添加后端返回的新消息（排除已有的用户消息）
+        for (const msg of result.messages) {
+          const msgId = msg.message_id || msg.id;
+          if (!existingIds.has(msgId)) {
+            chat.messages.push({
+              id: msgId,
+              authorId: msg.author_id,
+              author_name: msg.author_name,
+              text: msg.content,
+              content: msg.content,
+              time: msg.timestamp,
+              role: msg.role
+            });
+          }
+        }
+      }
+
+      chat.updatedAt = result.updated_at || stamp();
+    } catch (err) {
+      console.error('发送消息失败:', err);
+      // 失败时移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+      // 恢复输入内容
+      draft.value = text;
+      alert('发送失败: ' + err.message);
+    } finally {
+      isSending.value = false;
+    }
+  } else {
+    // 本地模式：先push用户消息，再mock响应
+    push("user", text);
+    setTimeout(() => {
+      push("theorist", "（前端演示）这是本地mock模式的响应。\n请启动后端服务以使用完整功能。");
+    }, 500);
+  }
+}
+
+function quote(msg) {
+  quoted.value = `${nameOf(msg.authorId)}：${msg.text?.split("\n")[0] || ''}`;
+}
+
+async function askAI() {
+  if (!activeChat.value || isSending.value) return;
+
+  if (useBackend.value) {
+    isSending.value = true;
+    const chat = activeChat.value;
+
+    try {
+      // 添加"正在思考"的占位消息
+      const loadingMsg = {
+        id: uid(),
+        authorId: "ai-loading",
+        author_name: "",
+        text: "正在思考...",
+        content: "正在思考...",
+        time: now(),
+        role: "",
+        isLoading: true
+      };
+      chat.messages.push(loadingMsg);
+      chat.updatedAt = stamp();
+
+      // 调用继续API
+      const result = await apiClient.continueChat(chat.id);
+
+      // 移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+
+      // 添加AI响应
+      if (result.messages && result.messages.length > 0) {
+        const existingIds = new Set(chat.messages.map(m => m.id));
+        for (const msg of result.messages) {
+          const msgId = msg.message_id || msg.id;
+          if (!existingIds.has(msgId)) {
+            chat.messages.push({
+              id: msgId,
+              authorId: msg.author_id,
+              author_name: msg.author_name,
+              text: msg.content,
+              content: msg.content,
+              time: msg.timestamp,
+              role: msg.role
+            });
+          }
+        }
+      }
+
+      chat.updatedAt = result.updated_at || stamp();
+    } catch (err) {
+      console.error('继续对话失败:', err);
+      // 失败时移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+      alert('继续对话失败: ' + err.message);
+    } finally {
+      isSending.value = false;
+    }
+  } else {
+    // 本地模式：mock响应
+    push("theorist", "（前端演示）我继续补充：把本次目标写成一句话，然后用一个例子验证。\n如果例子能跑通，你就真正理解了。");
+  }
+}
+
+function download(filename, text) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportCurrent(type) {
+  const c = activeChat.value;
+  if (!c) return;
+  const exportedAt = new Date().toISOString();
+
+  if (type === "json") {
+    const payload = {
+      id: c.id,
+      title: c.title,
+      updatedAt: c.updatedAt,
+      exportedAt,
+      messages: c.messages,
+    };
+    download(`${c.title}.json`, JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  const header = `# ${c.title}\n# id: ${c.id}\n# exportedAt: ${exportedAt}\n\n`;
+  const body = c.messages
+    .map((m) => `[${m.time}] ${nameOf(m.authorId)}：\n${m.text || m.content || ''}`)
+    .join("\n\n---\n\n");
+
+  download(`${c.title}.txt`, header + body);
+}
+
+</script>
+
+<style scoped>
+.app{
+  height:100%;
+  display:grid;
+  grid-template-columns: 340px 1fr;
+}
+/* 置顶文字按钮（替代星星） */
+.pinText{
+  font-size:12px;
+  padding:4px 8px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  color: var(--muted);
+  cursor:pointer;
+  white-space:nowrap;
+}
+/* 高级搜索框 */
+.search{
+  width: calc(100% - 16px);
+  margin: 8px 8px 14px;
+  padding: 10px 12px;
+  border-radius: 14px;
+
+  border:1px solid rgba(255,255,255,.08);
+  background: linear-gradient(
+    180deg,
+    rgba(255,255,255,.06),
+    rgba(255,255,255,.03)
+  );
+
+  color: var(--text);
+  font-size:13px;
+  outline:none;
+
+  transition: all .18s ease;
+}
+
+.search::placeholder{
+  color: rgba(255,255,255,.45);
+}
+
+/* 聚焦时更“高级” */
+.search:focus{
+  border-color: rgba(106,167,255,.45);
+  background: rgba(106,167,255,.08);
+  box-shadow:
+    0 0 0 3px rgba(106,167,255,.12),
+    inset 0 0 0 1px rgba(106,167,255,.15);
+}
+
+.pinText:hover{
+  color: var(--text);
+  border-color: rgba(255,255,255,.25);
+}
+
+.pinText.on{
+  color: #ffcc66;
+  border-color: rgba(255,204,102,.45);
+  background: rgba(255,204,102,.12);
+}
+
+.chatList::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chatList::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,0);
+  border-radius: 999px;
+  transition: background-color .25s;
+}
+
+.chatList:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,.28);
+}
+
+/* Sidebar */
+.sidebar{
+  border-right:1px solid var(--line);
+  background: linear-gradient(180deg, rgba(17,26,51,.92), rgba(10,16,34,.92));
+  padding:18px;
+  overflow:auto;
+  position:relative;
+  padding-bottom:90px;
+}
+
+.brand{
+  display:flex;
+  gap:12px;
+  align-items:center;
+  padding:10px 10px 16px;
+  border-bottom:1px solid var(--line);
+  margin-bottom:14px;
+}
+.logo{
+  width:44px;height:44px;
+  border-radius:14px;
+  display:grid;place-items:center;
+  background: rgba(106,167,255,.18);
+  border:1px solid rgba(106,167,255,.35);
+  font-weight:800;
+}
+.title .name{ font-size:18px; font-weight:800; }
+.title .sub{ font-size:12px; color:var(--muted); margin-top:2px; }
+
+.section{ margin-top:14px; }
+.sectionTitle{
+  font-size:12px;
+  color:var(--muted);
+  margin:10px 6px;
+  letter-spacing:.08em;
+}
+.rowBetween{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+}
+
+.ghost{
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  padding:6px 10px;
+  border-radius:10px;
+  cursor:pointer;
+  font-size:12px;
+}
+.ghost:hover{ filter:brightness(1.05); }
+
+.chatList{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  padding:0 4px;
+
+  /* 新增：让历史对话列表可滚动 */
+  max-height: 560px;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.chatItem{
+  text-align:left;
+  padding:10px 10px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  cursor:pointer;
+}
+.chatItem:hover{ background: rgba(255,255,255,.05); }
+.chatItem.active{
+  border-color: rgba(106,167,255,.25);
+  background: rgba(106,167,255,.10);
+}
+.chatTitle{ font-weight:900; }
+.chatMeta{
+  margin-top:6px;
+  font-size:12px;
+  color:var(--muted);
+  display:flex;
+  gap:6px;
+  align-items:center;
+}
+
+.exportRow{
+  display:flex;
+  gap:10px;
+  padding:10px 4px 0;
+}
+.topic{
+  flex:1;
+  padding:10px 12px;
+  border-radius:12px;
+  border:1px solid rgba(106,167,255,.22);
+  background: rgba(106,167,255,.12);
+  color: var(--text);
+  cursor:pointer;
+  font-weight:800;
+}
+.topic2{
+  border-color: rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+}
+.topic:hover{ filter: brightness(1.05); }
+
+.hint{
+  margin:10px 6px 0;
+  font-size:12px;
+  color:var(--muted);
+  line-height:1.4;
+}
+
+/* Members */
+.member{
+  display:flex;
+  gap:10px;
+  padding:10px;
+  border-radius:14px;
+  border:1px solid transparent;
+  transition:.15s;
+}
+.member:hover{
+  background: rgba(255,255,255,.04);
+  border-color: rgba(255,255,255,.06);
+}
+.avatar{
+  width:40px;height:40px;border-radius:14px;
+  display:grid;place-items:center;
+  border:1px solid rgba(255,255,255,.2);
+  background: rgba(255,255,255,.06);
+  flex:0 0 auto;
+  font-weight:700;
+}
+.meta{ min-width:0; }
+.row{ display:flex; gap:8px; align-items:center; }
+.mname{ font-weight:800; }
+.tag{
+  font-size:11px;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+}
+.desc{
+  margin-top:4px;
+  font-size:12px;
+  color:var(--muted);
+  line-height:1.35;
+}
+
+/* User bottom bar */
+.userBar{
+  position:absolute;
+  left:12px;
+  right:12px;
+  bottom:12px;
+  display:flex;
+  gap:10px;
+  align-items:center;
+  padding:10px 10px;
+  border-radius:16px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(10,16,34,.65);
+  backdrop-filter: blur(10px);
+}
+.uAvatar{
+  width:38px;height:38px;border-radius:14px;
+  display:grid;place-items:center;
+  font-weight:900;
+  border:1px solid rgba(255,255,255,.18);
+  background: rgba(255,255,255,.06);
+}
+.uMeta{ min-width:0; }
+.uName{ font-weight:900; }
+.uSub{ font-size:12px; color:var(--muted); margin-top:2px; }
+.gear{
+  margin-left:auto;
+  width:34px;height:34px;border-radius:12px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  cursor:pointer;
+}
+
+/* Main */
+.main{
+  display:grid;
+  grid-template-rows: 74px 1fr auto;
+  min-width:0;
+}
+.topbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:16px 18px;
+  border-bottom:1px solid var(--line);
+  background: rgba(10,16,34,.45);
+  backdrop-filter: blur(10px);
+}
+.topicTitle .big{ font-weight:900; }
+.topicTitle .small{ margin-top:4px; font-size:12px; color:var(--muted); }
+
+.status{
+  display:flex; align-items:center; gap:8px;
+  font-size:12px; color:var(--muted);
+  padding:8px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+}
+.dot{
+  width:8px;height:8px;border-radius:99px;
+  background: var(--success);
+  box-shadow: 0 0 0 6px rgba(81,209,138,.12);
+}
+
+/* Chat */
+.chat{ overflow:auto; padding:18px; }
+.timeline{
+  max-width: 980px;
+  margin: 0 auto;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+.msg{ display:flex; }
+.msg.me{ justify-content:flex-end; }
+.bubble{
+  width: min(780px, 100%);
+  border-radius:18px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  padding:12px 14px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18);
+}
+.head{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:6px;
+}
+.who{ color: var(--text); font-weight:900; }
+.badge{
+  font-size:11px;
+  padding:2px 8px;
+  border-radius:999px;
+  background: rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.10);
+}
+.time{ margin-left:auto; opacity:.9; }
+.content p{ margin:0; line-height:1.55; font-size:14px; color: var(--text); }
+.content p + p{ margin-top:8px; }
+.actions{ display:flex; gap:8px; margin-top:10px; }
+.mini{
+  padding:6px 10px;
+  border-radius:10px;
+  background: rgba(255,255,255,.04);
+  border:1px solid rgba(255,255,255,.08);
+  color: var(--muted);
+  cursor:pointer;
+  font-size:12px;
+}
+.mini:hover{ color: var(--text); }
+
+/* Composer */
+.composer{
+  border-top:1px solid var(--line);
+  background: rgba(10,16,34,.55);
+  backdrop-filter: blur(10px);
+  padding:12px 18px 14px;
+}
+.inputRow{
+  max-width: 980px;
+  margin: 0 auto;
+  display:flex;
+  gap:10px;
+  align-items:flex-end;
+}
+.input{
+  flex:1;
+  resize:none;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  padding:12px 12px;
+  outline:none;
+}
+.input:focus{ border-color: rgba(106,167,255,.35); }
+.send{
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid rgba(106,167,255,.25);
+  background: rgba(106,167,255,.18);
+  color: var(--text);
+  font-weight:900;
+  cursor:pointer;
+  min-width: 90px;
+}
+.send:disabled{ opacity:.45; cursor:not-allowed; }
+.tips{
+  max-width:980px;
+  margin:10px auto 0;
+  font-size:12px;
+  color:var(--muted);
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+
+.quote{
+  max-width:980px;
+  margin:0 auto 10px;
+  padding:10px 12px;
+  border-radius:14px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  display:flex;
+  gap:10px;
+  align-items:center;
+}
+.qtag{
+  font-size:12px;
+  padding:3px 8px;
+  border-radius:999px;
+  background: rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.10);
+  color: var(--muted);
+}
+.qtext{
+  font-size:12px;
+  color: var(--muted);
+  overflow:hidden;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+}
+.qclose{
+  margin-left:auto;
+  width:26px;height:26px;
+  border-radius:10px;
+  border:1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  cursor:pointer;
+}
+
+/* Loading指示器 */
+.loading-indicator {
+  display: flex;
+  gap: 8px;
+  padding: 8px 0;
+}
+
+.dot-bounce {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(106,167,255,.6);
+  animation: bounce 1.4s infinite ease-in-out both;
+}
+
+.dot-bounce:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.dot-bounce:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+.dot-bounce:nth-child(3) {
+  animation-delay: 0s;
+}
+
+@keyframes bounce {
+  0%, 80%, 100% {
+    transform: scale(0.6);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Loading气泡样式 */
+.bubble.loading {
+  opacity: 0.8;
+  border-style: dashed;
+}
+</style>

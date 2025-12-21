@@ -1,13 +1,11 @@
 # agents/rewriter_tool.py
 from __future__ import annotations
 
-from typing import Optional, Dict, Any
-
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 
-from dev.agents._shared import clean_text, is_templated, build_rewrite_context
-from dev.model_client import llm_theorist
+from ._shared import clean_text, is_templated, build_rewrite_context
+from .model_client import llm_theorist
 
 
 _REWRITER_SYS = """

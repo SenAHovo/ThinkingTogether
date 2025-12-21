@@ -9,9 +9,9 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
-from dev.agents._shared import clean_text, excerpt
+from ._shared import clean_text
 from dev.memory.history_store import events_to_messages
-from dev.model_client import llm_organizer
+from .model_client import llm_organizer
 
 
 SPEAKERS = ["理论家", "实践者", "质疑者"]

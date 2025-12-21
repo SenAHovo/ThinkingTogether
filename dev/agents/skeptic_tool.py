@@ -7,17 +7,16 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
-from dev.agents._shared import (
+from ._shared import (
     clean_text,
-    excerpt,
     is_templated,
     build_rewrite_context,
     pick_tic,
     taboos_text,
 )
 from dev.memory.history_store import events_to_messages
-from dev.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
-from dev.model_client import llm_skeptic
+from utils.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
+from .model_client import llm_skeptic
 
 
 _SKEPTIC_SYS = """
@@ -107,6 +106,11 @@ def skeptic_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 - 可选口头禅：{tic or "（无）"}
 - 禁忌：{taboos}
 
+【最重要的优先级】
+1. 如果最近一轮是【用户】发言，你必须优先回应用户的具体问题或观点！
+2. 用户参与这个讨论是为了得到有价值的回应，不要忽略用户的需求
+3. 你的回应应该让用户感觉"被听到了"和"被理解了"
+
 【重要提醒】
 - 必须针对最近1-2轮发言中的具体观点进行质疑
 - 及时回应新提出的观点或案例，不要延迟质疑
@@ -117,6 +121,7 @@ def skeptic_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 【发言要求】
 请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑。
 但不要只否定：要补一个"更稳的说法/必要条件/边界"，并抛出一个关键追问推动讨论。
+如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
 输出1~2段口语自然段即可。
 """

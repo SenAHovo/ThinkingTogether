@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import uuid
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -144,6 +145,44 @@ def apply_patch(state: DiscussionState, patch: Dict[str, Any]):
             if not k:
                 continue
             state.style_health[k] = int(state.style_health.get(k, 0)) + 1
+
+    # 如果启用了持久化存储，同时保存到数据库
+    if os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() == 'true':
+        try:
+            from mysql.persistent_store import persistent_state_store
+            persistent_state_store.save_state(state)
+        except Exception as e:
+            print(f"保存状态到数据库失败: {e}")
+
+
+def load_state_from_db(thread_id: str) -> Optional[DiscussionState]:
+    """从数据库加载状态"""
+    if os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() != 'true':
+        return None
+
+    try:
+        from mysql.persistent_store import persistent_state_store
+        state_data = persistent_state_store.load_state(thread_id)
+        if state_data:
+            state = DiscussionState(thread_id=thread_id, topic=state_data['topic'])
+            state.phase = state_data.get('phase', 'opening')
+            state.turn_id = state_data.get('turn_id', 0)
+            state.last_speaker = state_data.get('last_speaker')
+            state.last_user_interjection = state_data.get('last_user_interjection')
+            state.agenda = state_data.get('agenda', [])
+            state.consensus = state_data.get('consensus', [])
+            state.disagreements = state_data.get('disagreements', [])
+            state.open_questions = state_data.get('open_questions', [])
+            state.style_health = state_data.get('style_health', {
+                "list_like": 0,
+                "generic": 0,
+                "repetitive": 0,
+            })
+            return state
+    except Exception as e:
+        print(f"从数据库加载状态失败: {e}")
+
+    return None
 
 
 def advance_turn(state: DiscussionState, speaker: Optional[str] = None):

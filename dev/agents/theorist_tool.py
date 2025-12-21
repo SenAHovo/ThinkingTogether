@@ -7,17 +7,16 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
-from dev.agents._shared import (
+from ._shared import (
     clean_text,
-    excerpt,
     is_templated,
     build_rewrite_context,
     pick_tic,
     taboos_text,
 )
 from dev.memory.history_store import events_to_messages
-from dev.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
-from dev.model_client import llm_theorist
+from utils.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
+from .model_client import llm_theorist
 
 
 # -------------------------
@@ -120,6 +119,11 @@ def theorist_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 - 可选口头禅：{tic or "（无）"}
 - 禁忌：{taboos}
 
+【最重要的优先级】
+1. 如果最近一轮是【用户】发言，你必须优先回应用户的具体问题或观点！
+2. 用户参与这个讨论是为了得到有价值的回应，不要忽略用户的需求
+3. 你的回应应该让用户感觉"被听到了"和"被理解了"
+
 【重要提醒】
 - 必须回应最近1-2轮发言中的具体观点或问题
 - 避免重复之前已经讨论过的内容
@@ -129,6 +133,7 @@ def theorist_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 
 【发言要求】
 请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准）。
+如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
 输出1~2段口语自然段即可。
 """

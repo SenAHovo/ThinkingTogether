@@ -4,7 +4,17 @@
       "WebSearch",
       "Bash(python:*)",
       "Bash(find:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(del:*)",
+      "Bash(mysql:*)",
+      "Bash(findstr:*)",
+      "Bash(timeout:*)",
+      "Bash(npm install:*)",
+      "Bash(ping:*)",
+      "Bash(npm run dev)",
+      "Bash(netstat:*)",
+      "Bash(taskkill:*)",
+      "Bash(cmd //c taskkill //PID 82504 //F)"
     ],
     "deny": [],
     "ask": []

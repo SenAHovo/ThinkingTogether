@@ -1,0 +1,21 @@
+﻿:root{
+  --bg:#0b1020;
+  --panel:#111a33;
+  --panel2:#0f1730;
+  --text:#eaf0ff;
+  --muted:#9fb0d0;
+  --line:rgba(255,255,255,.08);
+  --primary:#6aa7ff;
+  --success:#51d18a;
+  --warn:#ffcc66;
+}
+
+*{ box-sizing:border-box; }
+html,body,#app{ height:100%; }
+body{
+  margin:0;
+  background: radial-gradient(1200px 800px at 20% 0%, #14204a 0%, var(--bg) 55%);
+  color:var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial;
+}
+button, input{ font: inherit; }
