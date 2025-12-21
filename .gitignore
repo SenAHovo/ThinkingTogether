@@ -1,3 +1,3 @@
 .env
-Agent.*
-LangChain_Learning.*
+Agent
+LangChain_Learning
