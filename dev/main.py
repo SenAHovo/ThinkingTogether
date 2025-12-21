@@ -1,18 +1,23 @@
 # main.py
 from __future__ import annotations
 
+import os
+import sys
 import uuid
 from types import SimpleNamespace
 from typing import Dict, Callable
 
-from agents.organizer_agent import OrganizerAgent
-from agents.theorist_tool import theorist_speak
-from agents.practitioner_tool import practitioner_speak
-from agents.skeptic_tool import skeptic_speak
+# 添加项目根目录到Python路径
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.rewriter_tools import rewrite_if_needed
-from memory.history_store import history_store
-from memory.state_store import init_state, set_agenda, apply_patch, advance_turn, DiscussionState
+from dev.agents.organizer_agent import OrganizerAgent
+from dev.agents.theorist_tool import theorist_speak
+from dev.agents.practitioner_tool import practitioner_speak
+from dev.agents.skeptic_tool import skeptic_speak
+
+from dev.agents.rewriter_tools import rewrite_if_needed
+from dev.memory.history_store import history_store
+from dev.memory.state_store import init_state, set_agenda, apply_patch, advance_turn, DiscussionState, load_state_from_db
 
 
 # ========== 角色工具映射 ==========
@@ -83,12 +88,18 @@ def run_one_topic(topic: str) -> bool:
     返回 True 表示继续外层循环（输入新话题），False 表示退出程序。
     """
     thread_id = uuid.uuid4().hex[:12]
-    state = init_state(thread_id=thread_id, topic=topic)
+
+    # 尝试从数据库加载已有状态，如果没有则创建新的
+    state = load_state_from_db(thread_id)
+    if not state:
+        state = init_state(thread_id=thread_id, topic=topic)
+    else:
+        state.topic = topic  # 更新话题
 
     organizer = OrganizerAgent()
 
-    # 记录用户给出的“话题”（公开发言）
-    history_store.record_user(thread_id, topic, tags=["topic"])
+    # 记录用户给出的"话题"（公开发言）
+    history_store.record_user(thread_id, topic, tags=["topic"], topic=topic)
     advance_turn(state, "用户")
 
     # 组织者开场（公开发言）+ 初始化 agenda
@@ -152,7 +163,7 @@ def run_one_topic(topic: str) -> bool:
             print(f"\n--- 用户：{user_input} ---")
 
             # 用户公开发言写入共享历史
-            history_store.record_user(thread_id, user_input, tags=["interject"])
+            history_store.record_user(thread_id, user_input, tags=["interject"], topic=topic)
             state.last_user_interjection = user_input
             advance_turn(state, "用户")
 
@@ -209,18 +220,42 @@ def run_one_topic(topic: str) -> bool:
     return True
 
 
+def show_database_stats():
+    """显示数据库统计信息"""
+    if os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() != 'true':
+        print("持久化存储未启用")
+        return
+
+    try:
+        from dev.mysql.persistent_store import persistent_history_store
+        # 这里可以添加更多统计功能
+        print("数据库统计功能正在开发中...")
+    except Exception as e:
+        print(f"获取统计信息失败: {e}")
+
+
 def main():
-    print("=== 智炬五维：协同学习对话（LangChain 最小闭环）===")
-    print("输入话题开始；输入 /quit 退出。\n")
+    print("=== 智炬五维：协同学习对话（集成数据库版）===")
+    print("命令：输入话题开始 /stats统计 /quit退出")
+    print(f"持久化存储: {'启用' if os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() == 'true' else '禁用'}\n")
 
     while True:
-        topic = input("User(话题)> ").strip()
-        if not topic:
+        user_input = input("User(话题/命令)> ").strip()
+        if not user_input:
             continue
-        if topic.lower() in {"/quit", "quit", "exit"}:
-            break
 
-        cont = run_one_topic(topic)
+        # 处理命令
+        if user_input.lower() in {"/quit", "quit", "exit"}:
+            break
+        elif user_input.lower() == "/stats":
+            show_database_stats()
+            continue
+        elif user_input.startswith("/"):
+            print(f"未知命令: {user_input}")
+            continue
+
+        # 运行话题讨论
+        cont = run_one_topic(user_input)
         if not cont:
             break
 

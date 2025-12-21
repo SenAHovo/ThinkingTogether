@@ -7,17 +7,16 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableLambda
 
-from dev.agents._shared import (
+from ._shared import (
     clean_text,
-    excerpt,
     is_templated,
     build_rewrite_context,
     pick_tic,
     taboos_text,
 )
 from dev.memory.history_store import events_to_messages
-from dev.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
-from dev.model_client import llm_theorist
+from utils.companion_tool_io import CompanionSpeakInput, CompanionSpeakOutput, Hook
+from .model_client import llm_theorist
 
 
 # -------------------------

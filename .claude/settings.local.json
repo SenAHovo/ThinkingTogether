@@ -4,7 +4,9 @@
       "WebSearch",
       "Bash(python:*)",
       "Bash(find:*)",
-      "Bash(tree:*)"
+      "Bash(tree:*)",
+      "Bash(del:*)",
+      "Bash(mysql:*)"
     ],
     "deny": [],
     "ask": []
