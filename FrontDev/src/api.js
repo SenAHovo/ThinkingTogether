@@ -97,6 +97,16 @@ class ApiClient {
   }
 
   /**
+   * 生成对话总结（对话继续进行）
+   * POST /api/chats/{chatId}/summary
+   */
+  async summarizeChat(chatId) {
+    return this.request(`/chats/${chatId}/summary`, {
+      method: 'POST',
+    });
+  }
+
+  /**
    * 删除对话
    * DELETE /api/chats/{chatId}
    */

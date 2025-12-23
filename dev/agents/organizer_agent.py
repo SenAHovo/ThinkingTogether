@@ -85,6 +85,7 @@ class OrganizerAgent:
         self._route_chain = self._build_route_chain()
         self._update_chain = self._build_update_chain()
         self._final_chain = self._build_final_chain()
+        self._summary_chain = self._build_summary_chain()
 
     @staticmethod
     def _build_opening_chain():
@@ -150,6 +151,22 @@ class OrganizerAgent:
         sys = (
             "你是【组织者/主持人】。现在要收尾。\n"
             "请用口语方式做2~3段总结：共识、分歧、下一步建议。\n"
+            "不要清单/小标题/套话。"
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            ("system", sys),
+            MessagesPlaceholder("history"),
+            ("human", "{instruction}"),
+        ])
+        chain = prompt | llm_organizer | RunnableLambda(lambda m: m.content)
+        return chain
+
+    @staticmethod
+    def _build_summary_chain():
+        sys = (
+            "你是【组织者/主持人】。你要做一个中间总结，帮助大家理清思路。\n"
+            "请用口语方式做2~3段总结：目前的进展、关键共识、值得深入的地方。\n"
+            "注意：这不是结束，而是帮助大家理清思路后继续讨论。\n"
             "不要清单/小标题/套话。"
         )
         prompt = ChatPromptTemplate.from_messages([
@@ -387,4 +404,24 @@ class OrganizerAgent:
             "- 不要清单/小标题/套话\n"
         )
         out = self._final_chain.invoke({"history": history, "instruction": instruction})
+        return clean_text(out)
+
+    # ---------- Intermediate summary ----------
+    def summarize(self, state: Any, transcript_tail: List[dict]) -> str:
+        """
+        生成中间总结，对话继续进行
+        与 finalize 不同的是：这不是结束，而是帮助理清思路后继续讨论
+        """
+        history: List[BaseMessage] = events_to_messages(transcript_tail)
+        topic = _get(state, "topic", "")
+
+        instruction = (
+            f"话题：{topic}\n"
+            "请做一个中间总结，要求：\n"
+            "- 2~3段口语自然段\n"
+            "- 提到：目前的进展、关键共识、值得深入探讨的地方\n"
+            "- 这是中间总结，对话还会继续，所以不要用'最后''结束'等词\n"
+            "- 不要清单/小标题/套话\n"
+        )
+        out = self._summary_chain.invoke({"history": history, "instruction": instruction})
         return clean_text(out)

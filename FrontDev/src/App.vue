@@ -104,10 +104,6 @@
                 </div>
                 <p v-else v-for="(p, i) in (msg.text || msg.content || '').split('\n')" :key="i">{{ p }}</p>
               </div>
-              <div class="actions" v-if="!msg.isLoading">
-                <button class="mini" @click="quote(msg)">引用</button>
-                <button class="mini" @click="askAI(msg)" :disabled="isSending">让 AI 继续</button>
-              </div>
             </div>
           </div>
         </div>
@@ -129,6 +125,12 @@
             @keydown.enter.exact.prevent="send()"
             :disabled="isSending || isCreating"
           />
+          <button class="continue-btn" :disabled="isSending || isCreating" @click="askAI" title="让AI继续发言">
+            继续
+          </button>
+          <button class="summary-btn" :disabled="isSending || isCreating" @click="summarize" title="生成当前对话总结">
+            总结
+          </button>
           <button class="send" :disabled="!draft.trim() || isSending || isCreating" @click="send">
             {{ isSending ? '发送中...' : isCreating ? '创建中...' : '发送' }}
           </button>
@@ -454,25 +456,6 @@ async function send() {
   const text = draft.value.trim();
   if (!text || isSending.value || isCreating.value) return;
 
-  // 检查是否为 /end 命令
-  if (text.toLowerCase() === '/end') {
-    if (!activeChat.value || activeChat.value.id === 'empty') {
-      alert('请先选择一个对话');
-      return;
-    }
-    draft.value = "";
-    quoted.value = null;
-
-    if (useBackend.value) {
-      try {
-        await sendMessage(activeChat.value.id, '', 'end');
-      } catch (err) {
-        console.error('生成总结失败:', err);
-      }
-    }
-    return;
-  }
-
   // 如果没有活跃对话或对话为空，创建新对话
   if (!activeChat.value || activeChat.value.id === 'empty') {
     draft.value = "";
@@ -582,25 +565,27 @@ async function send() {
       // 4. 移除loading消息，替换为真实AI响应
       chat.messages = chat.messages.filter(m => !m.isLoading);
 
-      // 5. 添加AI响应（只添加后端返回的新消息）
-      if (result.messages && result.messages.length > 0) {
-        // 找出本地已有的消息ID
-        const existingIds = new Set(chat.messages.map(m => m.id));
+      // 5. 添加AI响应（只添加新消息）
+      // 获取当前聊天中已存在的消息ID集合
+      const existingIds = new Set(chat.messages.map(m => m.id));
 
-        // 只添加后端返回的新消息（排除已有的用户消息）
+      if (result.messages && result.messages.length > 0) {
         for (const msg of result.messages) {
           const msgId = msg.message_id || msg.id;
-          if (!existingIds.has(msgId)) {
-            chat.messages.push({
-              id: msgId,
-              authorId: msg.author_id,
-              author_name: msg.author_name,
-              text: msg.content,
-              content: msg.content,
-              time: msg.timestamp,
-              role: msg.role
-            });
+          // 只添加不存在的消息，跳过用户消息和loading消息
+          if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+            continue;
           }
+          chat.messages.push({
+            id: msgId,
+            authorId: msg.author_id,
+            author_name: msg.author_name,
+            text: msg.content,
+            content: msg.content,
+            time: msg.timestamp,
+            role: msg.role
+          });
+          existingIds.add(msgId);
         }
       }
 
@@ -630,6 +615,10 @@ function quote(msg) {
 
 async function askAI() {
   if (!activeChat.value || isSending.value) return;
+  if (activeChat.value.id === 'empty') {
+    alert('请先选择或创建一个对话');
+    return;
+  }
 
   if (useBackend.value) {
     isSending.value = true;
@@ -656,22 +645,26 @@ async function askAI() {
       // 移除loading消息
       chat.messages = chat.messages.filter(m => !m.isLoading);
 
-      // 添加AI响应
+      // 添加AI响应（只添加新消息）
+      const existingIds = new Set(chat.messages.map(m => m.id));
+
       if (result.messages && result.messages.length > 0) {
-        const existingIds = new Set(chat.messages.map(m => m.id));
         for (const msg of result.messages) {
           const msgId = msg.message_id || msg.id;
-          if (!existingIds.has(msgId)) {
-            chat.messages.push({
-              id: msgId,
-              authorId: msg.author_id,
-              author_name: msg.author_name,
-              text: msg.content,
-              content: msg.content,
-              time: msg.timestamp,
-              role: msg.role
-            });
+          // 只添加不存在的消息，跳过用户消息和loading消息
+          if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+            continue;
           }
+          chat.messages.push({
+            id: msgId,
+            authorId: msg.author_id,
+            author_name: msg.author_name,
+            text: msg.content,
+            content: msg.content,
+            time: msg.timestamp,
+            role: msg.role
+          });
+          existingIds.add(msgId);
         }
       }
 
@@ -687,6 +680,76 @@ async function askAI() {
   } else {
     // 本地模式：mock响应
     push("theorist", "（前端演示）我继续补充：把本次目标写成一句话，然后用一个例子验证。\n如果例子能跑通，你就真正理解了。");
+  }
+}
+
+async function summarize() {
+  if (!activeChat.value || isSending.value) return;
+  if (activeChat.value.id === 'empty') {
+    alert('请先选择或创建一个对话');
+    return;
+  }
+
+  if (useBackend.value) {
+    isSending.value = true;
+    const chat = activeChat.value;
+
+    try {
+      // 添加"正在总结"的占位消息
+      const loadingMsg = {
+        id: uid(),
+        authorId: "ai-loading",
+        author_name: "",
+        text: "正在生成总结...",
+        content: "正在生成总结...",
+        time: now(),
+        role: "",
+        isLoading: true
+      };
+      chat.messages.push(loadingMsg);
+      chat.updatedAt = stamp();
+
+      // 调用总结API
+      const result = await apiClient.summarizeChat(chat.id);
+
+      // 移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+
+      // 添加总结消息（只添加新消息）
+      const existingIds = new Set(chat.messages.map(m => m.id));
+
+      if (result.messages && result.messages.length > 0) {
+        for (const msg of result.messages) {
+          const msgId = msg.message_id || msg.id;
+          // 只添加不存在的消息
+          if (msg.isLoading || existingIds.has(msgId)) {
+            continue;
+          }
+          chat.messages.push({
+            id: msgId,
+            authorId: msg.author_id,
+            author_name: msg.author_name,
+            text: msg.content,
+            content: msg.content,
+            time: msg.timestamp,
+            role: msg.role
+          });
+          existingIds.add(msgId);
+        }
+      }
+
+      chat.updatedAt = result.updated_at || stamp();
+    } catch (err) {
+      console.error('生成总结失败:', err);
+      // 失败时移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
+      alert('生成总结失败: ' + err.message);
+    } finally {
+      isSending.value = false;
+    }
+  } else {
+    // 本地模式：mock响应
+    push("facilitator", "（前端演示）好的，我来总结一下目前的讨论。我们聊了几个关键点，讨论还在继续中。");
   }
 }
 
@@ -729,9 +792,10 @@ function exportCurrent(type) {
 
 <style scoped>
 .app{
-  height:100%;
+  height:100vh;
   display:grid;
   grid-template-columns: 340px 1fr;
+  overflow: hidden;
 }
 /* 置顶文字按钮（替代星星） */
 .pinText{
@@ -808,9 +872,11 @@ function exportCurrent(type) {
   border-right:1px solid var(--line);
   background: linear-gradient(180deg, rgba(17,26,51,.92), rgba(10,16,34,.92));
   padding:18px;
-  overflow:auto;
+  display:flex;
+  flex-direction:column;
+  height:100vh;
+  overflow:hidden;
   position:relative;
-  padding-bottom:90px;
 }
 
 .brand{
@@ -832,7 +898,14 @@ function exportCurrent(type) {
 .title .name{ font-size:18px; font-weight:800; }
 .title .sub{ font-size:12px; color:var(--muted); margin-top:2px; }
 
-.section{ margin-top:14px; }
+.section{
+  margin-top:14px;
+  flex:1;
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+}
 .sectionTitle{
   font-size:12px;
   color:var(--muted);
@@ -861,11 +934,11 @@ function exportCurrent(type) {
   flex-direction:column;
   gap:8px;
   padding:0 4px;
-
-  /* 新增：让历史对话列表可滚动 */
-  max-height: 560px;
-  overflow: auto;
+  flex:1;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 6px;
+  min-height: 0;
 }
 
 .chatItem{
@@ -971,6 +1044,7 @@ function exportCurrent(type) {
   border:1px solid rgba(255,255,255,.10);
   background: rgba(10,16,34,.65);
   backdrop-filter: blur(10px);
+  flex-shrink: 0;
 }
 .uAvatar{
   width:38px;height:38px;border-radius:14px;
@@ -996,6 +1070,8 @@ function exportCurrent(type) {
   display:grid;
   grid-template-rows: 74px 1fr auto;
   min-width:0;
+  height:100vh;
+  overflow:hidden;
 }
 .topbar{
   display:flex;
@@ -1024,7 +1100,12 @@ function exportCurrent(type) {
 }
 
 /* Chat */
-.chat{ overflow:auto; padding:18px; }
+.chat{
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding:18px;
+  min-height: 0;
+}
 .timeline{
   max-width: 980px;
   margin: 0 auto;
@@ -1079,6 +1160,7 @@ function exportCurrent(type) {
   background: rgba(10,16,34,.55);
   backdrop-filter: blur(10px);
   padding:12px 18px 14px;
+  flex-shrink: 0;
 }
 .inputRow{
   max-width: 980px;
@@ -1098,6 +1180,38 @@ function exportCurrent(type) {
   outline:none;
 }
 .input:focus{ border-color: rgba(106,167,255,.35); }
+.continue-btn{
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid rgba(81,209,138,.25);
+  background: rgba(81,209,138,.18);
+  color: var(--text);
+  font-weight:900;
+  cursor:pointer;
+  min-width: 70px;
+  transition: all .18s ease;
+}
+.continue-btn:hover:not(:disabled){
+  filter: brightness(1.05);
+  border-color: rgba(81,209,138,.45);
+}
+.continue-btn:disabled{ opacity:.45; cursor:not-allowed; }
+.summary-btn{
+  padding:12px 14px;
+  border-radius:14px;
+  border:1px solid rgba(199,125,255,.25);
+  background: rgba(199,125,255,.18);
+  color: var(--text);
+  font-weight:900;
+  cursor:pointer;
+  min-width: 70px;
+  transition: all .18s ease;
+}
+.summary-btn:hover:not(:disabled){
+  filter: brightness(1.05);
+  border-color: rgba(199,125,255,.45);
+}
+.summary-btn:disabled{ opacity:.45; cursor:not-allowed; }
 .send{
   padding:12px 14px;
   border-radius:14px;
@@ -1107,6 +1221,11 @@ function exportCurrent(type) {
   font-weight:900;
   cursor:pointer;
   min-width: 90px;
+  transition: all .18s ease;
+}
+.send:hover:not(:disabled){
+  filter: brightness(1.05);
+  border-color: rgba(106,167,255,.45);
 }
 .send:disabled{ opacity:.45; cursor:not-allowed; }
 .tips{

@@ -375,32 +375,8 @@ async def send_message(request: SendMessageRequest):
     state = session["state"]
     organizer = session["organizer"]
 
-    # 处理特殊命令
-    if action == "end":
-        # 结束对话，生成总结
-        state.phase = "closing"
-        summary = organizer.finalize(state, history_store.tail(state.thread_id, 20))
-        summary = rewrite_if_needed(summary)
-        history_store.record_speaker(state.thread_id, "组织者", summary, tags=["summary"])
-        advance_turn(state, "组织者")
-
-        summary_msg = {
-            "message_id": uuid.uuid4().hex,
-            "chat_id": chat_id,
-            "author_id": "facilitator",
-            "author_name": "组织者",
-            "content": summary,
-            "timestamp": get_current_time(),
-            "role": "组织者",
-        }
-        session["messages"].append(summary_msg)
-        session["updated_at"] = get_timestamp()
-
-        # 返回消息列表（包含新增的消息）
-        return {
-            "messages": session["messages"],
-            "updated_at": session["updated_at"]
-        }
+    # 不再处理 /end 命令 - 用户可以通过总结按钮来获取总结
+    # 移除 action == "end" 的处理逻辑
 
     # 用户输入内容
     if content:
@@ -513,6 +489,42 @@ async def continue_chat(chat_id: str):
         }
 
     raise HTTPException(status_code=500, detail="无法生成响应")
+
+
+@app.post("/api/chats/{chat_id}/summary")
+async def summarize_chat(chat_id: str):
+    """生成对话总结，对话继续进行"""
+    session = get_session(chat_id)
+    state = session["state"]
+    organizer = session["organizer"]
+
+    # 组织者生成总结（不改变对话状态，保持继续进行）
+    summary = organizer.summarize(state, history_store.tail(state.thread_id, 20))
+    summary = rewrite_if_needed(summary)
+
+    # 记录总结到历史
+    history_store.record_speaker(state.thread_id, "组织者", summary, tags=["summary"])
+    advance_turn(state, "组织者")
+
+    # 添加总结消息
+    summary_msg = {
+        "message_id": uuid.uuid4().hex,
+        "chat_id": chat_id,
+        "author_id": "facilitator",
+        "author_name": "组织者",
+        "content": summary,
+        "timestamp": get_current_time(),
+        "role": "组织者",
+    }
+    session["messages"].append(summary_msg)
+    session["updated_at"] = get_timestamp()
+
+    # 对话继续进行，状态保持为 discussion
+    # 返回消息列表（包含新增的总结消息）
+    return {
+        "messages": session["messages"],
+        "updated_at": session["updated_at"]
+    }
 
 
 @app.delete("/api/chats/{chat_id}")

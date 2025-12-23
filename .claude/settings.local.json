@@ -14,7 +14,8 @@
       "Bash(npm run dev)",
       "Bash(netstat:*)",
       "Bash(taskkill:*)",
-      "Bash(cmd //c taskkill //PID 82504 //F)"
+      "Bash(cmd //c taskkill //PID 82504 //F)",
+      "Bash(curl:*)"
     ],
     "deny": [],
     "ask": []
