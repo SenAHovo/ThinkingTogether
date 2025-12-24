@@ -208,6 +208,41 @@ class DatabaseManager:
             threads = cursor.fetchall()
             return threads
 
+    def get_threads_by_user(self, user_id: Optional[str], limit: int = 50) -> List[Dict[str, Any]]:
+        """
+        获取指定用户的对话列表（游客传 None 返回空列表）
+
+        Args:
+            user_id: 用户ID，None 表示游客
+            limit: 限制返回的线程数量
+
+        Returns:
+            List[Dict]: 线程列表，包含 thread_id, topic, user_id, updated_at 等
+        """
+        if not self.connection:
+            self.connect()
+
+        # 游客不返回历史对话
+        if user_id is None:
+            return []
+
+        with self.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT
+                    thread_id,
+                    topic,
+                    user_id,
+                    created_at,
+                    updated_at
+                FROM threads
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+                LIMIT %s
+            """, (user_id, limit))
+
+            threads = cursor.fetchall()
+            return threads
+
     def search_events(self, keyword: str, limit: int = 50) -> List[Dict[str, Any]]:
         """
         搜索包含关键词的事件

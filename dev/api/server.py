@@ -249,9 +249,10 @@ def load_session_from_db(chat_id: str):
 
         # 获取线程信息
         with _db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT topic FROM threads WHERE thread_id = %s", (chat_id,))
+            cursor.execute("SELECT topic, user_id FROM threads WHERE thread_id = %s", (chat_id,))
             thread_info = cursor.fetchone()
             topic = thread_info.get('topic') if thread_info else "历史对话"
+            thread_user_id = thread_info.get('user_id')  # 获取用户ID
 
         # 初始化状态
         state = init_state(thread_id=chat_id, topic=topic)
@@ -310,6 +311,8 @@ def load_session_from_db(chat_id: str):
             "thread_id": chat_id,
             "title": f"主题：{topic}",
             "topic": topic,
+            "user_id": thread_user_id,  # 添加用户ID
+            "is_guest": (thread_user_id is None),  # 添加游客标识
             "state": state,
             "organizer": organizer,
             "created_at": get_timestamp(),
@@ -326,16 +329,25 @@ def load_session_from_db(chat_id: str):
 
 
 def load_all_sessions_from_db():
-    """从数据库加载所有历史对话"""
+    """从数据库加载所有历史对话（只加载登录用户的对话，不加载游客的）"""
     if not _db_manager:
         return 0
 
     try:
-        threads = _db_manager.get_latest_threads(limit=100)
+        # 只加载有 user_id 的对话，不加载游客的对话（user_id 为 NULL）
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT thread_id
+                FROM threads
+                WHERE user_id IS NOT NULL
+                ORDER BY updated_at DESC
+                LIMIT 100
+            """)
+            thread_ids = [row['thread_id'] for row in cursor.fetchall()]
+
         loaded = 0
-        for thread in threads:
-            thread_id = thread.get('thread_id')
-            if thread_id and thread_id not in sessions:
+        for thread_id in thread_ids:
+            if thread_id not in sessions:
                 if load_session_from_db(thread_id):
                     loaded += 1
         print(f"[API] 从数据库加载了 {loaded} 个历史对话")
@@ -644,6 +656,7 @@ async def create_chat(
     topic = request.topic
     title = request.title or f"主题：{topic}"
     user_id = current_user["user_id"] if current_user else None
+    is_guest = (user_id is None)  # 游客标识
 
     # 初始化状态
     state = init_state(thread_id=thread_id, topic=topic)
@@ -651,42 +664,56 @@ async def create_chat(
     # 创建组织者
     organizer = OrganizerAgent()
 
-    # 记录用户话题
-    history_store.record_user(thread_id, topic, tags=["topic"], topic=topic)
-    advance_turn(state, "用户")
+    # 游客不保存到数据库，只在内存中
+    if not is_guest:
+        # 登录用户：记录到历史存储（会保存到数据库）
+        history_store.record_user(thread_id, topic, tags=["topic"], topic=topic)
+        advance_turn(state, "用户")
 
-    # 组织者开场
-    opening, agenda_items, active_item_id = organizer.open(topic, history_store.tail(thread_id, 8))
-    opening = rewrite_if_needed(opening)
-    history_store.record_speaker(thread_id, "组织者", opening, tags=["opening"])
-    advance_turn(state, "组织者")
+        # 组织者开场
+        opening, agenda_items, active_item_id = organizer.open(topic, history_store.tail(thread_id, 8))
+        opening = rewrite_if_needed(opening)
+        history_store.record_speaker(thread_id, "组织者", opening, tags=["opening"])
+        advance_turn(state, "组织者")
 
-    set_agenda(state, agenda_items, active_item_id)
-    state.phase = "discussion"
+        set_agenda(state, agenda_items, active_item_id)
+        state.phase = "discussion"
 
-    # 保存用户关联到数据库
-    if user_id and _db_manager:
-        try:
-            with _db_manager.get_cursor() as cursor:
-                # 更新 threads 表的 user_id
-                cursor.execute(
-                    "UPDATE threads SET user_id = %s WHERE thread_id = %s",
-                    (user_id, thread_id)
-                )
-                # 在 thread_owners 表中添加记录
-                cursor.execute(
-                    "INSERT INTO thread_owners (thread_id, user_id, is_public) VALUES (%s, %s, %s)",
-                    (thread_id, user_id, False)
-                )
-        except Exception as e:
-            print(f"[API] 保存用户关联失败: {e}")
+        # 保存用户关联到数据库
+        if _db_manager:
+            try:
+                with _db_manager.get_cursor() as cursor:
+                    # 确保 threads 表中有记录
+                    cursor.execute("""
+                        INSERT INTO threads (thread_id, topic, user_id, phase, turn_id, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        ON DUPLICATE KEY UPDATE user_id = %s
+                    """, (thread_id, topic, user_id, 'discussion', 1, datetime.now(), datetime.now(), user_id))
 
-    # 存储会话
+                    # 在 thread_owners 表中添加记录
+                    cursor.execute(
+                        "INSERT INTO thread_owners (thread_id, user_id, is_public) VALUES (%s, %s, %s)",
+                        (thread_id, user_id, False)
+                    )
+            except Exception as e:
+                print(f"[API] 保存用户关联失败: {e}")
+    else:
+        # 游客：只初始化状态，不保存到数据库
+        advance_turn(state, "用户")
+        opening, agenda_items, active_item_id = organizer.open(topic, [])
+        opening = rewrite_if_needed(opening)
+        advance_turn(state, "组织者")
+        set_agenda(state, agenda_items, active_item_id)
+        state.phase = "discussion"
+
+    # 存储会话（添加 user_id 用于过滤）
     sessions[chat_id] = {
         "chat_id": chat_id,
         "thread_id": thread_id,
         "title": title,
         "topic": topic,
+        "user_id": user_id,  # 添加用户ID到会话
+        "is_guest": is_guest,  # 添加游客标识
         "state": state,
         "organizer": organizer,
         "created_at": get_timestamp(),
@@ -723,14 +750,21 @@ async def create_chat(
 
 
 @app.get("/api/chats", response_model=ChatListResponse)
-async def get_chats(keyword: Optional[str] = None, limit: int = 50):
-    """获取对话列表 - 从数据库和内存合并获取"""
+async def get_chats(
+    keyword: Optional[str] = None,
+    limit: int = 50,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """获取对话列表 - 根据用户过滤"""
     chats = []
 
-    # 首先从数据库获取历史对话
-    if _db_manager:
+    # 获取当前用户ID
+    user_id = current_user["user_id"] if current_user else None
+
+    # 首先从数据库获取历史对话（只获取当前用户的）
+    if _db_manager and user_id:  # 只有登录用户才从数据库加载历史对话
         try:
-            db_threads = _db_manager.get_latest_threads(limit=limit)
+            db_threads = _db_manager.get_threads_by_user(user_id, limit=limit)
             for thread in db_threads:
                 thread_id = thread.get('thread_id')
                 # 如果不在内存中，需要加载
@@ -762,7 +796,13 @@ async def get_chats(keyword: Optional[str] = None, limit: int = 50):
             print(f"[API] 从数据库获取对话失败: {e}")
 
     # 添加内存中只有的对话（未保存到数据库的）
+    # 只返回当前用户的会话，游客只看到当前会话
     for chat_id, session in sessions.items():
+        # 过滤：只返回当前用户的会话或游客的会话
+        session_user_id = session.get("user_id")
+        if session_user_id != user_id:
+            continue  # 跳过不属于当前用户的会话
+
         if not any(c["id"] == chat_id for c in chats):
             chat_info = {
                 "id": session["chat_id"],

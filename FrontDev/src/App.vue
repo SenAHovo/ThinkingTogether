@@ -97,15 +97,17 @@
         </div>
       </header>
 
-      <section class="chat">
-        <div class="timeline">
+      <section class="chat" ref="chatContainer">
+        <div class="timeline" ref="timelineRef">
           <div class="msg" v-for="msg in activeChat.messages" :key="msg.id" :class="{me: msg.authorId==='user'}">
             <div class="bubble" :style="bubbleStyle(msg.authorId)" :class="{loading: msg.isLoading}">
-              <div class="head">
-                <span class="who">{{ nameOf(msg.authorId) }}</span>
-                <span class="badge" v-if="roleOf(msg.authorId)">{{ roleOf(msg.authorId) }}</span>
-                <span class="time">{{ msg.time }}</span>
-              </div>
+              <template v-if="msg.authorId !== 'user'">
+                <div class="head">
+                  <span class="who">{{ msg.author_name || nameOf(msg.authorId) }}</span>
+                  <span class="badge" v-if="roleOf(msg.authorId)">{{ roleOf(msg.authorId) }}</span>
+                  <span class="time">{{ msg.time }}</span>
+                </div>
+              </template>
               <div class="content">
                 <!-- Loading状态显示 -->
                 <div v-if="msg.isLoading" class="loading-indicator">
@@ -257,7 +259,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onUnmounted, watch } from "vue";
+import { computed, ref, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName, getUser } from "./api.js";
 
 // 定义 emits
@@ -319,6 +321,24 @@ const isCreating = ref(false);  // 正在创建对话
 // ========== WebSocket 管理 ==========
 let currentWsHandler = null;
 
+// ========== DOM 引用 ==========
+const chatContainer = ref(null);
+const timelineRef = ref(null);
+
+/**
+ * 滚动聊天区域到底部
+ */
+function scrollToBottom(smooth = true) {
+  nextTick(() => {
+    if (chatContainer.value) {
+      chatContainer.value.scrollTo({
+        top: chatContainer.value.scrollHeight,
+        behavior: smooth ? 'smooth' : 'auto'
+      });
+    }
+  });
+}
+
 // ========== 初始化加载 ==========
 onMounted(async () => {
   // 初始化用户状态
@@ -332,6 +352,7 @@ onMounted(async () => {
   if (chats.value.length > 0) {
     activeChatId.value = chats.value[0].id;
     await loadChatMessages(activeChatId.value);
+    scrollToBottom(false);
   }
 });
 
@@ -340,6 +361,22 @@ onUnmounted(() => {
   apiClient.disconnectAll();
   // 清理WebSocket连接跟踪
   wsConnectedChats.clear();
+});
+
+// ========== 监听用户登录状态变化 ==========
+watch(currentUser, async (newUser, oldUser) => {
+  // 当用户登录状态发生变化时（登录或登出），重新加载对话列表
+  // 如果是从游客变为登录用户，或从登录用户变为游客
+  if ((newUser === null && oldUser !== null) || (newUser !== null && oldUser === null) ||
+      (newUser && oldUser && newUser.user_id !== oldUser.user_id)) {
+    await loadChats();
+    // 如果有对话，选中第一个
+    if (chats.value.length > 0) {
+      activeChatId.value = chats.value[0].id;
+      await loadChatMessages(activeChatId.value);
+      scrollToBottom(false);
+    }
+  }
 });
 
 // ========== API 调用函数 ==========
@@ -583,6 +620,7 @@ async function switchChat(id) {
   // 加载该对话的完整消息历史
   if (id && id !== 'empty') {
     await loadChatMessages(id);
+    scrollToBottom(false);
   }
 }
 
@@ -617,7 +655,7 @@ async function send() {
         pinned: false,
         updatedAt: stamp(),
         messages: [
-          { id: uid(), authorId: "user", author_name: "用户", text, content: text, time: now(), role: "用户" },
+          { id: uid(), authorId: "user", author_name: user.name, text, content: text, time: now(), role: "用户" },
           { id: uid(), authorId: "facilitator", author_name: "组织者", text: "正在组织讨论...", content: "正在组织讨论...", time: now(), role: "组织者", isLoading: true }
         ],
       };
@@ -670,7 +708,7 @@ async function send() {
     const userMsg = {
       id: uid(),
       authorId: "user",
-      author_name: "用户",
+      author_name: user.name,
       text: text,
       content: text,
       time: now(),
@@ -678,6 +716,7 @@ async function send() {
     };
     chat.messages.push(userMsg);
     chat.updatedAt = stamp();
+    scrollToBottom();
 
     // 2. 添加"正在思考"的占位消息
     const loadingMsg = {
@@ -723,6 +762,7 @@ async function send() {
     }
 
     chat.updatedAt = result.updated_at || stamp();
+    scrollToBottom();
   } catch (err) {
     console.error('发送消息失败:', err);
     // 失败时移除loading消息
@@ -794,6 +834,7 @@ async function askAI() {
     }
 
     chat.updatedAt = result.updated_at || stamp();
+    scrollToBottom();
   } catch (err) {
     console.error('继续对话失败:', err);
     // 失败时移除loading消息
@@ -859,6 +900,7 @@ async function summarize() {
     }
 
     chat.updatedAt = result.updated_at || stamp();
+    scrollToBottom();
   } catch (err) {
     console.error('生成总结失败:', err);
     // 失败时移除loading消息
@@ -926,6 +968,15 @@ async function handleLogin() {
     currentUser.value = result.user;
     showLoginModal.value = false;
     loginForm.value = { username: '', password: '' };
+
+    // 登录成功后重新加载对话列表
+    await loadChats();
+    // 如果有对话，选中第一个
+    if (chats.value.length > 0) {
+      activeChatId.value = chats.value[0].id;
+      await loadChatMessages(activeChatId.value);
+      scrollToBottom(false);
+    }
   } catch (err) {
     formError.value = err.message || '登录失败，请检查用户名和密码';
   }
@@ -974,6 +1025,15 @@ async function handleRegister() {
       email: '',
       avatarUrl: '',
     };
+
+    // 注册成功后重新加载对话列表
+    await loadChats();
+    // 如果有对话，选中第一个
+    if (chats.value.length > 0) {
+      activeChatId.value = chats.value[0].id;
+      await loadChatMessages(activeChatId.value);
+      scrollToBottom(false);
+    }
   } catch (err) {
     formError.value = err.message || '注册失败，请重试';
   }
@@ -1342,7 +1402,7 @@ function exportCurrentWithAuth(type) {
 .chat{
   overflow-y: auto;
   overflow-x: hidden;
-  padding:18px;
+  padding:18px 18px 160px 18px;
   min-height: 0;
 }
 .timeline{
@@ -1350,17 +1410,21 @@ function exportCurrentWithAuth(type) {
   margin: 0 auto;
   display:flex;
   flex-direction:column;
-  gap:14px;
+  gap:4px;
 }
 .msg{ display:flex; }
-.msg.me{ justify-content:flex-end; }
+.msg.me{ justify-content:flex-end; padding-right: 100px; }
 .bubble{
-  width: min(780px, 100%);
+  width: 800px;
   border-radius:18px;
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.05);
   padding:12px 14px;
   box-shadow: 0 10px 30px rgba(0,0,0,.18);
+}
+.msg.me .bubble{
+  width: auto;
+  max-width: 500px;
 }
 .head{
   display:flex;
