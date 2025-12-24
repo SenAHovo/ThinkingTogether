@@ -57,8 +57,8 @@
           <button class="topic topic2" @click="exportCurrent('txt')">导出 TXT</button>
         </div>
 
-        <div class="hint">
-          目前为本地固定示例数据；后端接入后，把 chats/messages 替换为 API / WebSocket。
+        <div class="hint" v-if="error">
+          {{ error }}
         </div>
       </div>
       <!-- 左下角：用户信息 -->
@@ -66,7 +66,7 @@
         <div class="uAvatar">{{ user.short }}</div>
         <div class="uMeta">
           <div class="uName">{{ user.name }}</div>
-          <div class="uSub">本地演示模式</div>
+          <div class="uSub">在线</div>
         </div>
         <button class="gear" title="设置（占位）">⚙</button>
       </div>
@@ -82,7 +82,7 @@
 
         <div class="status">
           <span class="dot"></span>
-          <span>Local Demo</span>
+          <span>已连接</span>
         </div>
       </header>
 
@@ -158,9 +158,6 @@ const members = [
   { id: "facilitator", name: "组织者", short: "组", role: "主持", color: "#c77dff", desc: "控节奏、提炼结论、分配任务。" },
 ];
 
-// ========== 后端模式标志 ==========
-const useBackend = ref(true);  // 设为 false 可切换回本地mock模式
-
 // ========== 对话数据 ==========
 const chats = ref([]);
 const loading = ref(false);
@@ -175,17 +172,19 @@ let currentWsHandler = null;
 
 // ========== 初始化加载 ==========
 onMounted(async () => {
-  if (useBackend.value) {
-    await loadChats();
-  } else {
-    // 使用本地mock数据
-    chats.value = getMockChats();
+  await loadChats();
+  // 加载对话列表后，自动加载第一条对话的消息
+  if (chats.value.length > 0) {
+    activeChatId.value = chats.value[0].id;
+    await loadChatMessages(activeChatId.value);
   }
 });
 
 onUnmounted(() => {
   // 断开所有WebSocket连接
   apiClient.disconnectAll();
+  // 清理WebSocket连接跟踪
+  wsConnectedChats.clear();
 });
 
 // ========== API 调用函数 ==========
@@ -205,12 +204,7 @@ async function loadChats() {
   } catch (err) {
     console.error('加载对话列表失败:', err);
     error.value = err.message;
-    // 如果后端不可用，回退到本地mock
-    if (err.message.includes('fetch')) {
-      console.log('后端不可用，使用本地mock数据');
-      useBackend.value = false;
-      chats.value = getMockChats();
-    }
+    alert('无法连接到服务器，请确保后端服务已启动');
   } finally {
     loading.value = false;
   }
@@ -294,8 +288,45 @@ async function continueChat(chatId) {
   }
 }
 
+/**
+ * 加载指定对话的完整消息历史
+ */
+async function loadChatMessages(chatId) {
+  if (!chatId || chatId === 'empty') return;
+
+  try {
+    const result = await apiClient.getMessages(chatId, 100);
+    const chat = chats.value.find(c => c.id === chatId);
+    if (chat) {
+      // 转换后端消息格式为前端格式
+      chat.messages = result.messages.map(msg => ({
+        id: msg.message_id || msg.id,
+        authorId: msg.author_id,
+        author_name: msg.author_name,
+        text: msg.content,
+        content: msg.content,
+        time: msg.timestamp,
+        role: msg.role
+      }));
+      chat.updatedAt = result.updated_at || stamp();
+    }
+  } catch (err) {
+    console.error('加载对话消息失败:', err);
+  }
+}
+
 // ========== WebSocket 消息处理 ==========
+// 防止重复建立连接的标记
+const wsConnectedChats = new Set();
+
 function setupWebSocket(chatId) {
+  // 防止重复建立连接
+  if (wsConnectedChats.has(chatId)) {
+    console.log(`WebSocket already connected for chat: ${chatId}, skipping...`);
+    return;
+  }
+
+  wsConnectedChats.add(chatId);
   apiClient.connectWebSocket(
     chatId,
     (data) => {
@@ -316,43 +347,14 @@ function setupWebSocket(chatId) {
     },
     (err) => {
       console.error('WebSocket错误:', err);
+    },
+    () => {
+      // 连接关闭时清除标记
+      wsConnectedChats.delete(chatId);
     }
   );
 }
 
-// ========== Mock 数据生成（用于本地模式） ==========
-function seedChat(title, lines) {
-  return {
-    id: uid(),
-    title,
-    pinned: false,
-    updatedAt: stamp(),
-    messages: lines.map((x) => ({ id: uid(), ...x })),
-  };
-}
-
-function getMockChats() {
-  return [
-    seedChat("主题：二分查找怎么学？", [
-      { authorId: "facilitator", time: "14:10", text: "我们做一个高质量小组讨论：如何高效学习二分查找？\n先框架，再例子，最后总结易错点。" },
-      { authorId: "theorist", time: "14:11", text: "核心：单调性 + 不变式。\n你要明确区间定义：[l,r] 或 [l,r)。" },
-      { authorId: "skeptic", time: "14:12", text: "我就问一句：你怎么保证不死循环？\nmid 偏左还是偏右？while 条件是什么？" },
-      { authorId: "practitioner", time: "14:13", text: "先把一种写法练到肌肉记忆，再迁移。\n给你 3 道题：找值、找左边界、找右边界。" },
-    ]),
-
-    seedChat("主题：英语六级阅读怎么提速？", [
-      { authorId: "facilitator", time: "13:40", text: "目标：提速不等于瞎猜。\n我们用结构化阅读：主旨句+转折+指代。" },
-      { authorId: "theorist", time: "13:41", text: "阅读速度的瓶颈通常不是词汇，而是句子结构。\n建议先训练：并列/从句拆分。" },
-      { authorId: "practitioner", time: "13:42", text: "练法：每篇文章只做两件事：\n1) 画出段落主题句 2) 标记转折词（however/but）。" },
-    ]),
-
-    seedChat("主题：多智能体学习系统怎么设计？", [
-      { authorId: "facilitator", time: "12:05", text: "我们先定义最小闭环：角色→发言→总结→追问。\n前端先 mock，后端再接入。" },
-      { authorId: "skeptic", time: "12:06", text: "关键问题：多角色同时输出会不会互相打架？\n需要仲裁器/轮次控制。" },
-      { authorId: "theorist", time: "12:07", text: "信息结构要固定：观点/证据/反例/结论。\n前端最好支持引用与回溯。" },
-    ]),
-  ];
-}
 const visibleChats = computed(() => {
   const kw = keyword.value.trim().toLowerCase();
 
@@ -398,7 +400,7 @@ const activeChat = computed(() => {
 
 // ========== 监听当前对话变化，建立WebSocket连接 ==========
 watch(activeChatId, (newId, oldId) => {
-  if (useBackend.value && newId) {
+  if (newId) {
     setupWebSocket(newId);
   }
 });
@@ -418,38 +420,27 @@ function bubbleStyle(authorId) {
   return { borderColor: (m?.color || "#6aa7ff") + "66" };
 }
 
-function switchChat(id) {
+async function switchChat(id) {
   activeChatId.value = id;
   quoted.value = null;
   draft.value = "";
-}
 
-function newChat() {
-  if (useBackend.value) {
-    // 后端模式：提示用户输入话题
-    const topic = prompt("请输入讨论话题：");
-    if (topic) {
-      createChat(topic).then(chatId => {
-        activeChatId.value = chatId;
-      }).catch(err => {
-        alert('创建对话失败: ' + err.message);
-      });
-    }
-  } else {
-    // 本地模式：创建mock对话
-    const c = seedChat("新对话（示例）", [
-      { authorId: "facilitator", time: now(), text: "这是一个新会话的占位示例。\n后端接入后，这里会由服务端创建会话。" },
-    ]);
-    chats.value = [c, ...chats.value];
-    activeChatId.value = c.id;
+  // 加载该对话的完整消息历史
+  if (id && id !== 'empty') {
+    await loadChatMessages(id);
   }
 }
 
-function push(authorId, text) {
-  const c = activeChat.value;
-  if (!c) return;
-  c.messages.push({ id: uid(), authorId, text, time: now() });
-  c.updatedAt = stamp();
+function newChat() {
+  // 提示用户输入话题
+  const topic = prompt("请输入讨论话题：");
+  if (topic) {
+    createChat(topic).then(chatId => {
+      activeChatId.value = chatId;
+    }).catch(err => {
+      alert('创建对话失败: ' + err.message);
+    });
+  }
 }
 
 async function send() {
@@ -461,66 +452,54 @@ async function send() {
     draft.value = "";
     quoted.value = null;
 
-    if (useBackend.value) {
-      isCreating.value = true;
-      try {
-        // 先在前端显示用户消息（乐观更新）
-        const tempId = uid();
-        const newChat = {
-          id: tempId,
-          title: `主题：${text}`,
-          pinned: false,
-          updatedAt: stamp(),
-          messages: [
-            { id: uid(), authorId: "user", author_name: "用户", text, content: text, time: now(), role: "用户" },
-            { id: uid(), authorId: "facilitator", author_name: "组织者", text: "正在组织讨论...", content: "正在组织讨论...", time: now(), role: "组织者", isLoading: true }
-          ],
-        };
-        chats.value = [newChat, ...chats.value];
-        activeChatId.value = tempId;
+    isCreating.value = true;
+    try {
+      // 先在前端显示用户消息（乐观更新）
+      const tempId = uid();
+      const newChat = {
+        id: tempId,
+        title: `主题：${text}`,
+        pinned: false,
+        updatedAt: stamp(),
+        messages: [
+          { id: uid(), authorId: "user", author_name: "用户", text, content: text, time: now(), role: "用户" },
+          { id: uid(), authorId: "facilitator", author_name: "组织者", text: "正在组织讨论...", content: "正在组织讨论...", time: now(), role: "组织者", isLoading: true }
+        ],
+      };
+      chats.value = [newChat, ...chats.value];
+      activeChatId.value = tempId;
 
-        // 异步创建对话并获取真实响应
-        const result = await apiClient.createChat(text);
-        const realChat = {
-          id: result.chat_id,
-          title: result.title,
-          pinned: false,
-          updatedAt: result.updated_at,
-          messages: result.messages.map(msg => ({
-            id: msg.message_id || msg.id,
-            authorId: msg.author_id,
-            author_name: msg.author_name,
-            text: msg.content,
-            content: msg.content,
-            time: msg.timestamp,
-            role: msg.role
-          })),
-        };
+      // 异步创建对话并获取真实响应
+      const result = await apiClient.createChat(text);
+      const realChat = {
+        id: result.chat_id,
+        title: result.title,
+        pinned: false,
+        updatedAt: result.updated_at,
+        messages: result.messages.map(msg => ({
+          id: msg.message_id || msg.id,
+          authorId: msg.author_id,
+          author_name: msg.author_name,
+          text: msg.content,
+          content: msg.content,
+          time: msg.timestamp,
+          role: msg.role
+        })),
+      };
 
-        // 替换临时对话为真实对话
-        const idx = chats.value.findIndex(c => c.id === tempId);
-        if (idx !== -1) {
-          chats.value[idx] = realChat;
-          activeChatId.value = realChat.id;
-        }
-      } catch (err) {
-        console.error('创建对话失败:', err);
-        // 创建失败时移除临时对话
-        chats.value = chats.value.filter(c => c.id !== activeChatId.value);
-        alert('创建对话失败: ' + err.message);
-      } finally {
-        isCreating.value = false;
+      // 替换临时对话为真实对话
+      const idx = chats.value.findIndex(c => c.id === tempId);
+      if (idx !== -1) {
+        chats.value[idx] = realChat;
+        activeChatId.value = realChat.id;
       }
-    } else {
-      // 本地模式：创建新对话
-      const c = seedChat(`主题：${text}`, [
-        { authorId: "user", time: now(), text }
-      ]);
-      chats.value = [c, ...chats.value];
-      activeChatId.value = c.id;
-      setTimeout(() => {
-        push("facilitator", "（本地演示）让我们开始讨论这个话题。");
-      }, 500);
+    } catch (err) {
+      console.error('创建对话失败:', err);
+      // 创建失败时移除临时对话
+      chats.value = chats.value.filter(c => c.id !== activeChatId.value);
+      alert('创建对话失败: ' + err.message);
+    } finally {
+      isCreating.value = false;
     }
     return;
   }
@@ -530,82 +509,74 @@ async function send() {
   draft.value = "";
   quoted.value = null;
 
-  if (useBackend.value) {
-    isSending.value = true;
-    try {
-      // 1. 立即在前端添加用户消息
-      const userMsg = {
-        id: uid(),
-        authorId: "user",
-        author_name: "用户",
-        text: text,
-        content: text,
-        time: now(),
-        role: "用户"
-      };
-      chat.messages.push(userMsg);
-      chat.updatedAt = stamp();
+  isSending.value = true;
+  try {
+    // 1. 立即在前端添加用户消息
+    const userMsg = {
+      id: uid(),
+      authorId: "user",
+      author_name: "用户",
+      text: text,
+      content: text,
+      time: now(),
+      role: "用户"
+    };
+    chat.messages.push(userMsg);
+    chat.updatedAt = stamp();
 
-      // 2. 添加"正在思考"的占位消息
-      const loadingMsg = {
-        id: uid(),
-        authorId: "ai-loading",
-        author_name: "",
-        text: "正在思考...",
-        content: "正在思考...",
-        time: now(),
-        role: "",
-        isLoading: true
-      };
-      chat.messages.push(loadingMsg);
+    // 2. 添加"正在思考"的占位消息
+    const loadingMsg = {
+      id: uid(),
+      authorId: "ai-loading",
+      author_name: "",
+      text: "正在思考...",
+      content: "正在思考...",
+      time: now(),
+      role: "",
+      isLoading: true
+    };
+    chat.messages.push(loadingMsg);
 
-      // 3. 异步调用后端获取AI响应
-      const result = await apiClient.sendMessage(chat.id, text, 'send');
+    // 3. 异步调用后端获取AI响应
+    const result = await apiClient.sendMessage(chat.id, text, 'send');
 
-      // 4. 移除loading消息，替换为真实AI响应
-      chat.messages = chat.messages.filter(m => !m.isLoading);
+    // 4. 移除loading消息，替换为真实AI响应
+    chat.messages = chat.messages.filter(m => !m.isLoading);
 
-      // 5. 添加AI响应（只添加新消息）
-      // 获取当前聊天中已存在的消息ID集合
-      const existingIds = new Set(chat.messages.map(m => m.id));
+    // 5. 添加AI响应（只添加新消息）
+    // 获取当前聊天中已存在的消息ID集合
+    const existingIds = new Set(chat.messages.map(m => m.id));
 
-      if (result.messages && result.messages.length > 0) {
-        for (const msg of result.messages) {
-          const msgId = msg.message_id || msg.id;
-          // 只添加不存在的消息，跳过用户消息和loading消息
-          if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
-            continue;
-          }
-          chat.messages.push({
-            id: msgId,
-            authorId: msg.author_id,
-            author_name: msg.author_name,
-            text: msg.content,
-            content: msg.content,
-            time: msg.timestamp,
-            role: msg.role
-          });
-          existingIds.add(msgId);
+    if (result.messages && result.messages.length > 0) {
+      for (const msg of result.messages) {
+        const msgId = msg.message_id || msg.id;
+        // 只添加不存在的消息，跳过用户消息和loading消息
+        if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+          continue;
         }
+        chat.messages.push({
+          id: msgId,
+          authorId: msg.author_id,
+          author_name: msg.author_name,
+          text: msg.content,
+          content: msg.content,
+          time: msg.timestamp,
+          role: msg.role
+        });
+        existingIds.add(msgId);
       }
-
-      chat.updatedAt = result.updated_at || stamp();
-    } catch (err) {
-      console.error('发送消息失败:', err);
-      // 失败时移除loading消息
-      chat.messages = chat.messages.filter(m => !m.isLoading);
-      // 恢复输入内容
-      draft.value = text;
-      alert('发送失败: ' + err.message);
-    } finally {
-      isSending.value = false;
     }
-  } else {
-    // 本地模式：先push用户消息，再mock响应
-    push("user", text);
-    setTimeout(() => {
-      push("theorist", "（前端演示）这是本地mock模式的响应。\n请启动后端服务以使用完整功能。");
-    }, 500);
+
+    chat.updatedAt = result.updated_at || stamp();
+  } catch (err) {
+    console.error('发送消息失败:', err);
+    // 失败时移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
+    // 恢复输入内容
+    draft.value = text;
+    alert('发送失败: ' + err.message);
+  } finally {
+    isSending.value = false;
   }
 }
 
@@ -620,66 +591,61 @@ async function askAI() {
     return;
   }
 
-  if (useBackend.value) {
-    isSending.value = true;
-    const chat = activeChat.value;
+  isSending.value = true;
+  const chat = activeChat.value;
 
-    try {
-      // 添加"正在思考"的占位消息
-      const loadingMsg = {
-        id: uid(),
-        authorId: "ai-loading",
-        author_name: "",
-        text: "正在思考...",
-        content: "正在思考...",
-        time: now(),
-        role: "",
-        isLoading: true
-      };
-      chat.messages.push(loadingMsg);
-      chat.updatedAt = stamp();
+  try {
+    // 添加"正在思考"的占位消息
+    const loadingMsg = {
+      id: uid(),
+      authorId: "ai-loading",
+      author_name: "",
+      text: "正在思考...",
+      content: "正在思考...",
+      time: now(),
+      role: "",
+      isLoading: true
+    };
+    chat.messages.push(loadingMsg);
+    chat.updatedAt = stamp();
 
-      // 调用继续API
-      const result = await apiClient.continueChat(chat.id);
+    // 调用继续API
+    const result = await apiClient.continueChat(chat.id);
 
-      // 移除loading消息
-      chat.messages = chat.messages.filter(m => !m.isLoading);
+    // 移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
 
-      // 添加AI响应（只添加新消息）
-      const existingIds = new Set(chat.messages.map(m => m.id));
+    // 添加AI响应（只添加新消息）
+    const existingIds = new Set(chat.messages.map(m => m.id));
 
-      if (result.messages && result.messages.length > 0) {
-        for (const msg of result.messages) {
-          const msgId = msg.message_id || msg.id;
-          // 只添加不存在的消息，跳过用户消息和loading消息
-          if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
-            continue;
-          }
-          chat.messages.push({
-            id: msgId,
-            authorId: msg.author_id,
-            author_name: msg.author_name,
-            text: msg.content,
-            content: msg.content,
-            time: msg.timestamp,
-            role: msg.role
-          });
-          existingIds.add(msgId);
+    if (result.messages && result.messages.length > 0) {
+      for (const msg of result.messages) {
+        const msgId = msg.message_id || msg.id;
+        // 只添加不存在的消息，跳过用户消息和loading消息
+        if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+          continue;
         }
+        chat.messages.push({
+          id: msgId,
+          authorId: msg.author_id,
+          author_name: msg.author_name,
+          text: msg.content,
+          content: msg.content,
+          time: msg.timestamp,
+          role: msg.role
+        });
+        existingIds.add(msgId);
       }
-
-      chat.updatedAt = result.updated_at || stamp();
-    } catch (err) {
-      console.error('继续对话失败:', err);
-      // 失败时移除loading消息
-      chat.messages = chat.messages.filter(m => !m.isLoading);
-      alert('继续对话失败: ' + err.message);
-    } finally {
-      isSending.value = false;
     }
-  } else {
-    // 本地模式：mock响应
-    push("theorist", "（前端演示）我继续补充：把本次目标写成一句话，然后用一个例子验证。\n如果例子能跑通，你就真正理解了。");
+
+    chat.updatedAt = result.updated_at || stamp();
+  } catch (err) {
+    console.error('继续对话失败:', err);
+    // 失败时移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
+    alert('继续对话失败: ' + err.message);
+  } finally {
+    isSending.value = false;
   }
 }
 
@@ -690,66 +656,61 @@ async function summarize() {
     return;
   }
 
-  if (useBackend.value) {
-    isSending.value = true;
-    const chat = activeChat.value;
+  isSending.value = true;
+  const chat = activeChat.value;
 
-    try {
-      // 添加"正在总结"的占位消息
-      const loadingMsg = {
-        id: uid(),
-        authorId: "ai-loading",
-        author_name: "",
-        text: "正在生成总结...",
-        content: "正在生成总结...",
-        time: now(),
-        role: "",
-        isLoading: true
-      };
-      chat.messages.push(loadingMsg);
-      chat.updatedAt = stamp();
+  try {
+    // 添加"正在总结"的占位消息
+    const loadingMsg = {
+      id: uid(),
+      authorId: "ai-loading",
+      author_name: "",
+      text: "正在生成总结...",
+      content: "正在生成总结...",
+      time: now(),
+      role: "",
+      isLoading: true
+    };
+    chat.messages.push(loadingMsg);
+    chat.updatedAt = stamp();
 
-      // 调用总结API
-      const result = await apiClient.summarizeChat(chat.id);
+    // 调用总结API
+    const result = await apiClient.summarizeChat(chat.id);
 
-      // 移除loading消息
-      chat.messages = chat.messages.filter(m => !m.isLoading);
+    // 移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
 
-      // 添加总结消息（只添加新消息）
-      const existingIds = new Set(chat.messages.map(m => m.id));
+    // 添加总结消息（只添加新消息）
+    const existingIds = new Set(chat.messages.map(m => m.id));
 
-      if (result.messages && result.messages.length > 0) {
-        for (const msg of result.messages) {
-          const msgId = msg.message_id || msg.id;
-          // 只添加不存在的消息
-          if (msg.isLoading || existingIds.has(msgId)) {
-            continue;
-          }
-          chat.messages.push({
-            id: msgId,
-            authorId: msg.author_id,
-            author_name: msg.author_name,
-            text: msg.content,
-            content: msg.content,
-            time: msg.timestamp,
-            role: msg.role
-          });
-          existingIds.add(msgId);
+    if (result.messages && result.messages.length > 0) {
+      for (const msg of result.messages) {
+        const msgId = msg.message_id || msg.id;
+        // 只添加不存在的消息
+        if (msg.isLoading || existingIds.has(msgId)) {
+          continue;
         }
+        chat.messages.push({
+          id: msgId,
+          authorId: msg.author_id,
+          author_name: msg.author_name,
+          text: msg.content,
+          content: msg.content,
+          time: msg.timestamp,
+          role: msg.role
+        });
+        existingIds.add(msgId);
       }
-
-      chat.updatedAt = result.updated_at || stamp();
-    } catch (err) {
-      console.error('生成总结失败:', err);
-      // 失败时移除loading消息
-      chat.messages = chat.messages.filter(m => !m.isLoading);
-      alert('生成总结失败: ' + err.message);
-    } finally {
-      isSending.value = false;
     }
-  } else {
-    // 本地模式：mock响应
-    push("facilitator", "（前端演示）好的，我来总结一下目前的讨论。我们聊了几个关键点，讨论还在继续中。");
+
+    chat.updatedAt = result.updated_at || stamp();
+  } catch (err) {
+    console.error('生成总结失败:', err);
+    // 失败时移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
+    alert('生成总结失败: ' + err.message);
+  } finally {
+    isSending.value = false;
   }
 }
 

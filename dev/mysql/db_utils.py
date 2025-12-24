@@ -292,8 +292,9 @@ class DatabaseManager:
             return False
 
 
-# 创建全局数据库管理器实例
+# 创建全局数据库管理器实例并自动连接
 db_manager = DatabaseManager.from_config()
+db_manager.connect()
 
 
 def get_db_manager() -> DatabaseManager:

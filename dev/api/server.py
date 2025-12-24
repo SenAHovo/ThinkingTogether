@@ -36,6 +36,20 @@ from dev.memory.state_store import (
 )
 from types import SimpleNamespace
 
+# 尝试导入数据库管理器
+_db_manager = None
+try:
+    from dev.mysql.db_utils import DatabaseManager
+    _db_manager = DatabaseManager.from_config()
+    if _db_manager.connect():
+        print("[API] 数据库连接成功，将支持历史对话加载")
+    else:
+        print("[API] 数据库连接失败，仅使用内存存储")
+        _db_manager = None
+except Exception as e:
+    print(f"[API] 数据库初始化失败: {e}，仅使用内存存储")
+    _db_manager = None
+
 # ========== FastAPI 应用初始化 ==========
 app = FastAPI(
     title="智炬五维协同学习系统 API",
@@ -136,8 +150,121 @@ def get_timestamp() -> str:
 def get_session(chat_id: str) -> Dict[str, Any]:
     """获取或创建会话"""
     if chat_id not in sessions:
-        raise HTTPException(status_code=404, detail="会话不存在")
+        # 尝试从数据库加载
+        if _db_manager:
+            load_session_from_db(chat_id)
+        if chat_id not in sessions:
+            raise HTTPException(status_code=404, detail="会话不存在")
     return sessions[chat_id]
+
+
+def load_session_from_db(chat_id: str):
+    """从数据库加载会话到内存"""
+    if not _db_manager:
+        return False
+
+    try:
+        # 获取线程的所有事件
+        events = _db_manager.get_thread_events(chat_id)
+        if not events:
+            return False
+
+        # 获取线程信息
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT topic FROM threads WHERE thread_id = %s", (chat_id,))
+            thread_info = cursor.fetchone()
+            topic = thread_info.get('topic') if thread_info else "历史对话"
+
+        # 初始化状态
+        state = init_state(thread_id=chat_id, topic=topic)
+
+        # 创建组织者
+        organizer = OrganizerAgent()
+
+        # 转换事件为消息格式
+        role_id_map = {
+            "用户": "user",
+            "理论家": "theorist",
+            "实践者": "practitioner",
+            "质疑者": "skeptic",
+            "组织者": "facilitator",
+        }
+
+        messages = []
+        for event in events:
+            speaker = event.get('speaker', '未知')
+            content = event.get('content', '')
+            created_at = event.get('created_at', '')
+
+            # 格式化时间 - 兼容多种时间格式
+            time_str = get_current_time()
+            if created_at:
+                try:
+                    # 尝试解析不同格式的时间
+                    created_at_str = str(created_at)
+                    if '.' in created_at_str:
+                        # 带微秒的格式
+                        dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        # 不带微秒的格式
+                        dt = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+                    time_str = dt.strftime("%H:%M")
+                except:
+                    time_str = get_current_time()
+
+            messages.append({
+                "message_id": event.get('event_id', uuid.uuid4().hex),
+                "chat_id": chat_id,
+                "author_id": role_id_map.get(speaker, "user"),
+                "author_name": speaker,
+                "content": content,
+                "timestamp": time_str,
+                "role": speaker,
+            })
+
+            # 更新状态（如果是用户或组织者）
+            if speaker in ["用户", "组织者", "理论家", "实践者", "质疑者"]:
+                advance_turn(state, speaker)
+
+        # 存储会话
+        sessions[chat_id] = {
+            "chat_id": chat_id,
+            "thread_id": chat_id,
+            "title": f"主题：{topic}",
+            "topic": topic,
+            "state": state,
+            "organizer": organizer,
+            "created_at": get_timestamp(),
+            "updated_at": get_timestamp(),
+            "messages": messages,
+        }
+
+        print(f"[API] 从数据库加载会话: {chat_id}, {len(messages)} 条消息")
+        return True
+
+    except Exception as e:
+        print(f"[API] 加载会话失败: {e}")
+        return False
+
+
+def load_all_sessions_from_db():
+    """从数据库加载所有历史对话"""
+    if not _db_manager:
+        return 0
+
+    try:
+        threads = _db_manager.get_latest_threads(limit=100)
+        loaded = 0
+        for thread in threads:
+            thread_id = thread.get('thread_id')
+            if thread_id and thread_id not in sessions:
+                if load_session_from_db(thread_id):
+                    loaded += 1
+        print(f"[API] 从数据库加载了 {loaded} 个历史对话")
+        return loaded
+    except Exception as e:
+        print(f"[API] 批量加载会话失败: {e}")
+        return 0
 
 
 def call_companion(
@@ -225,6 +352,13 @@ async def send_to_websocket(chat_id: str, message: dict):
 
 # ========== API 路由 ==========
 
+@app.on_event("startup")
+async def startup_event():
+    """应用启动时加载历史对话"""
+    print("[API] 应用启动中...")
+    load_all_sessions_from_db()
+
+
 @app.get("/")
 async def root():
     """根路径"""
@@ -311,28 +445,64 @@ async def create_chat(request: CreateChatRequest):
 
 @app.get("/api/chats", response_model=ChatListResponse)
 async def get_chats(keyword: Optional[str] = None, limit: int = 50):
-    """获取对话列表"""
+    """获取对话列表 - 从数据库和内存合并获取"""
     chats = []
+
+    # 首先从数据库获取历史对话
+    if _db_manager:
+        try:
+            db_threads = _db_manager.get_latest_threads(limit=limit)
+            for thread in db_threads:
+                thread_id = thread.get('thread_id')
+                # 如果不在内存中，需要加载
+                if thread_id not in sessions:
+                    load_session_from_db(thread_id)
+
+                # 现在从内存获取信息
+                if thread_id in sessions:
+                    session = sessions[thread_id]
+                    chat_info = {
+                        "id": session["chat_id"],
+                        "title": session["title"],
+                        "topic": session["topic"],
+                        "pinned": False,
+                        "updatedAt": session["updated_at"],
+                        "messages": session["messages"],
+                        "messageCount": len(session["messages"]),
+                    }
+                    # 关键词过滤
+                    if keyword:
+                        kw = keyword.lower()
+                        if kw not in chat_info["title"].lower():
+                            if session["messages"]:
+                                last_msg = session["messages"][-1]["content"].lower()
+                                if kw not in last_msg:
+                                    continue
+                    chats.append(chat_info)
+        except Exception as e:
+            print(f"[API] 从数据库获取对话失败: {e}")
+
+    # 添加内存中只有的对话（未保存到数据库的）
     for chat_id, session in sessions.items():
-        chat_info = {
-            "id": session["chat_id"],
-            "title": session["title"],
-            "topic": session["topic"],
-            "pinned": False,
-            "updatedAt": session["updated_at"],
-            "messages": session["messages"],
-            "messageCount": len(session["messages"]),
-        }
-        # 关键词过滤
-        if keyword:
-            kw = keyword.lower()
-            if kw not in chat_info["title"].lower():
-                # 检查最后一条消息
-                if session["messages"]:
-                    last_msg = session["messages"][-1]["content"].lower()
-                    if kw not in last_msg:
-                        continue
-        chats.append(chat_info)
+        if not any(c["id"] == chat_id for c in chats):
+            chat_info = {
+                "id": session["chat_id"],
+                "title": session["title"],
+                "topic": session["topic"],
+                "pinned": False,
+                "updatedAt": session["updated_at"],
+                "messages": session["messages"],
+                "messageCount": len(session["messages"]),
+            }
+            # 关键词过滤
+            if keyword:
+                kw = keyword.lower()
+                if kw not in chat_info["title"].lower():
+                    if session["messages"]:
+                        last_msg = session["messages"][-1]["content"].lower()
+                        if kw not in last_msg:
+                            continue
+            chats.append(chat_info)
 
     # 按更新时间排序
     chats.sort(key=lambda x: x["updatedAt"], reverse=True)

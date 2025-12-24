@@ -7,8 +7,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
-# 检查是否使用持久化存储
-USE_PERSISTENT_STORAGE = os.getenv('USE_PERSISTENT_STORAGE', 'auto').lower() == 'true'
+# 检查是否禁用持久化存储（默认启用）
+USE_PERSISTENT_STORAGE = os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() != 'false'
 
 # 尝试使用持久化存储，如果失败则使用内存存储
 _history_store_instance = None
@@ -16,7 +16,7 @@ _use_persistent = False
 
 if USE_PERSISTENT_STORAGE:
     try:
-        from mysql.persistent_store import PersistentHistoryStore
+        from dev.mysql.persistent_store import PersistentHistoryStore
         # 尝试创建持久化存储实例（会测试数据库连接）
         _history_store_instance = PersistentHistoryStore()
         # 测试连接是否正常

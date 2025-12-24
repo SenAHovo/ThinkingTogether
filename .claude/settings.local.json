@@ -15,7 +15,10 @@
       "Bash(netstat:*)",
       "Bash(taskkill:*)",
       "Bash(cmd //c taskkill //PID 82504 //F)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(cmd:*)",
+      "Bash(tasklist:*)",
+      "Bash(echo:*)"
     ],
     "deny": [],
     "ask": []
