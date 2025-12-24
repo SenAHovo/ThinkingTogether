@@ -9,16 +9,29 @@ import os
 import sys
 import uuid
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 from fastapi.responses import JSONResponse
 
 # 添加项目根目录到Python路径
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# server.py 位于 dev/api/ 目录下，需要向上两级到达项目根目录
+project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, project_root)
+
+# 导入认证模块
+from dev.auth.auth_utils import (
+    hash_password,
+    verify_password,
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    generate_user_id,
+    generate_session_id,
+)
 
 from dev.agents.organizer_agent import OrganizerAgent
 from dev.agents.theorist_tool import theorist_speak
@@ -114,6 +127,29 @@ class SendMessageRequest(BaseModel):
     action: Optional[str] = "send"  # send, continue, end
 
 
+# ========== 用户认证数据模型 ==========
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class UserResponse(BaseModel):
+    user_id: str
+    username: str
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+    role: str
+    is_active: bool
+    is_verified: bool
+
+
 class ChatResponse(BaseModel):
     chat_id: str
     title: str
@@ -140,6 +176,48 @@ class ChatListResponse(BaseModel):
 def get_current_time() -> str:
     """获取当前时间字符串 HH:mm"""
     return datetime.now().strftime("%H:%M")
+
+
+def get_timestamp() -> str:
+    """获取完整时间戳 MM/DD HH:mm"""
+    return datetime.now().strftime("%m/%d %H:%M")
+
+
+async def get_current_user(authorization: Optional[str] = Header(None)) -> Optional[Dict[str, Any]]:
+    """从请求头中获取当前用户"""
+    if not authorization:
+        return None
+
+    try:
+        # Bearer token 格式
+        token = authorization.replace("Bearer ", "")
+        payload = decode_token(token)
+
+        if not payload or payload.get("type") != "access":
+            return None
+
+        # 从数据库获取用户信息
+        if _db_manager:
+            with _db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
+                    (payload.get("user_id"),)
+                )
+                user = cursor.fetchone()
+                if user:
+                    return {
+                        "user_id": user["user_id"],
+                        "username": user["username"],
+                        "email": user["email"],
+                        "avatar_url": user["avatar_url"],
+                        "role": user["role"],
+                        "is_active": user["is_active"],
+                        "is_verified": user["is_verified"],
+                    }
+        return None
+    except Exception as e:
+        print(f"[API] 获取当前用户失败: {e}")
+        return None
 
 
 def get_timestamp() -> str:
@@ -375,13 +453,197 @@ async def health_check():
     return {"status": "healthy"}
 
 
+# ========== 用户认证 API ==========
+
+@app.post("/api/auth/register")
+async def register(request: RegisterRequest):
+    """用户注册"""
+    if not _db_manager:
+        raise HTTPException(status_code=500, detail="数据库未连接")
+
+    # 验证输入
+    if len(request.username) < 3:
+        raise HTTPException(status_code=400, detail="用户名至少3个字符")
+    if len(request.password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少6个字符")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户名是否已存在
+            cursor.execute("SELECT user_id FROM users WHERE username = %s", (request.username,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="用户名已存在")
+
+            # 检查邮箱是否已存在
+            if request.email:
+                cursor.execute("SELECT user_id FROM users WHERE email = %s", (request.email,))
+                if cursor.fetchone():
+                    raise HTTPException(status_code=400, detail="邮箱已被注册")
+
+            # 创建用户
+            user_id = generate_user_id()
+            password_hash = hash_password(request.password)
+
+            cursor.execute("""
+                INSERT INTO users (user_id, username, email, password_hash, avatar_url, role, is_active, is_verified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                user_id,
+                request.username,
+                request.email,
+                password_hash,
+                request.avatar_url,
+                "user",  # 注册用户默认角色为 user
+                True,
+                False
+            ))
+
+            # 生成访问令牌
+            access_token = create_access_token(user_id, request.username, "user")
+
+            return {
+                "message": "注册成功",
+                "user": {
+                    "user_id": user_id,
+                    "username": request.username,
+                    "email": request.email,
+                    "avatar_url": request.avatar_url,
+                    "role": "user",
+                },
+                "access_token": access_token,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 注册失败: {e}")
+        raise HTTPException(status_code=500, detail="注册失败")
+
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    """用户登录"""
+    if not _db_manager:
+        raise HTTPException(status_code=500, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 查询用户
+            cursor.execute(
+                "SELECT user_id, username, email, password_hash, avatar_url, role, is_active FROM users WHERE username = %s",
+                (request.username,)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+            # 验证密码
+            if not verify_password(request.password, user["password_hash"]):
+                raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+            # 检查账户是否激活
+            if not user["is_active"]:
+                raise HTTPException(status_code=403, detail="账户已被禁用")
+
+            # 更新最后登录时间
+            cursor.execute(
+                "UPDATE users SET last_login_at = %s WHERE user_id = %s",
+                (datetime.now(), user["user_id"])
+            )
+
+            # 生成令牌
+            access_token = create_access_token(user["user_id"], user["username"], user["role"])
+            refresh_token = create_refresh_token(user["user_id"])
+
+            # 保存刷新令牌到数据库
+            session_id = generate_session_id()
+            expires_at = datetime.now() + timedelta(days=30)
+            cursor.execute(
+                "INSERT INTO user_sessions (session_id, user_id, refresh_token, expires_at) VALUES (%s, %s, %s, %s)",
+                (session_id, user["user_id"], refresh_token, expires_at)
+            )
+
+            return {
+                "message": "登录成功",
+                "user": {
+                    "user_id": user["user_id"],
+                    "username": user["username"],
+                    "email": user["email"],
+                    "avatar_url": user["avatar_url"],
+                    "role": user["role"],
+                },
+                "access_token": access_token,
+                "refresh_token": refresh_token,
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 登录失败: {e}")
+        raise HTTPException(status_code=500, detail="登录失败")
+
+
+@app.get("/api/auth/me")
+async def get_current_user_info(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """获取当前用户信息"""
+    if not current_user:
+        return {
+            "user": None,
+            "role": "guest"
+        }
+
+    return {
+        "user": {
+            "user_id": current_user["user_id"],
+            "username": current_user["username"],
+            "email": current_user["email"],
+            "avatar_url": current_user["avatar_url"],
+            "role": current_user["role"],
+        },
+        "role": current_user["role"],
+    }
+
+
+@app.post("/api/auth/logout")
+async def logout(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user),
+    authorization: Optional[str] = Header(None)
+):
+    """用户登出"""
+    if not authorization:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    try:
+        token = authorization.replace("Bearer ", "")
+        payload = decode_token(token)
+
+        if payload and payload.get("user_id"):
+            # 删除用户的所有会话
+            if _db_manager:
+                with _db_manager.get_cursor() as cursor:
+                    cursor.execute(
+                        "DELETE FROM user_sessions WHERE user_id = %s",
+                        (payload.get("user_id"),)
+                    )
+
+        return {"message": "登出成功"}
+    except Exception as e:
+        print(f"[API] 登出失败: {e}")
+        raise HTTPException(status_code=500, detail="登出失败")
+
+
+# ========== 对话管理 API ==========
+
 @app.post("/api/chats")
-async def create_chat(request: CreateChatRequest):
+async def create_chat(
+    request: CreateChatRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
     """创建新对话"""
     thread_id = uuid.uuid4().hex[:12]
     chat_id = thread_id
     topic = request.topic
     title = request.title or f"主题：{topic}"
+    user_id = current_user["user_id"] if current_user else None
 
     # 初始化状态
     state = init_state(thread_id=thread_id, topic=topic)
@@ -401,6 +663,23 @@ async def create_chat(request: CreateChatRequest):
 
     set_agenda(state, agenda_items, active_item_id)
     state.phase = "discussion"
+
+    # 保存用户关联到数据库
+    if user_id and _db_manager:
+        try:
+            with _db_manager.get_cursor() as cursor:
+                # 更新 threads 表的 user_id
+                cursor.execute(
+                    "UPDATE threads SET user_id = %s WHERE thread_id = %s",
+                    (user_id, thread_id)
+                )
+                # 在 thread_owners 表中添加记录
+                cursor.execute(
+                    "INSERT INTO thread_owners (thread_id, user_id, is_public) VALUES (%s, %s, %s)",
+                    (thread_id, user_id, False)
+                )
+        except Exception as e:
+            print(f"[API] 保存用户关联失败: {e}")
 
     # 存储会话
     sessions[chat_id] = {

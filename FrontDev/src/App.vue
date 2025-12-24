@@ -24,8 +24,8 @@
 />
 
         <div class="exportRow">
-          <button class="topic" @click="exportCurrent('json')">导出 JSON</button>
-          <button class="topic topic2" @click="exportCurrent('txt')">导出 TXT</button>
+          <button class="topic" @click="exportCurrentWithAuth('json')">导出 JSON</button>
+          <button class="topic topic2" @click="exportCurrentWithAuth('txt')">导出 TXT</button>
         </div>
 
         <div class="chatList">
@@ -79,9 +79,21 @@
           <div class="small">可切换历史对话 · 可导出当前会话</div>
         </div>
 
-        <div class="status">
-          <span class="dot"></span>
-          <span>已连接</span>
+        <div class="topbarRight">
+          <!-- 未登录用户显示登录注册按钮 -->
+          <template v-if="!currentUser">
+            <button class="authBtn ghostBtn" @click="showRegisterModal = true">注册</button>
+            <button class="authBtn primaryBtn" @click="showLoginModal = true">登录</button>
+          </template>
+          <!-- 已登录用户显示用户名和登出按钮 -->
+          <template v-else>
+            <span class="welcomeText">{{ currentUser.username }}</span>
+            <button class="authBtn ghostBtn" @click="handleLogout">登出</button>
+          </template>
+          <div class="status">
+            <span class="dot"></span>
+            <span>已连接</span>
+          </div>
         </div>
       </header>
 
@@ -141,17 +153,152 @@
         </div>
       </footer>
     </main>
+
+    <!-- 登录弹窗 -->
+    <div v-if="showLoginModal" class="modalOverlay" @click.self="showLoginModal = false">
+      <div class="modal">
+        <div class="modalHeader">
+          <h2>登录</h2>
+          <button class="closeBtn" @click="showLoginModal = false">×</button>
+        </div>
+        <div class="modalBody">
+          <div v-if="formError" class="formError">{{ formError }}</div>
+          <div class="formGroup">
+            <label>用户名</label>
+            <input
+              v-model="loginForm.username"
+              type="text"
+              placeholder="请输入用户名"
+              @keyup.enter="handleLogin"
+            />
+          </div>
+          <div class="formGroup">
+            <label>密码</label>
+            <input
+              v-model="loginForm.password"
+              type="password"
+              placeholder="请输入密码"
+              @keyup.enter="handleLogin"
+            />
+          </div>
+          <button class="submitBtn" @click="handleLogin">登录</button>
+          <div class="formFooter">
+            还没有账号？
+            <a @click="showLoginModal = false; showRegisterModal = true">立即注册</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 注册弹窗 -->
+    <div v-if="showRegisterModal" class="modalOverlay" @click.self="showRegisterModal = false">
+      <div class="modal modalLarge">
+        <div class="modalHeader">
+          <h2>注册</h2>
+          <button class="closeBtn" @click="showRegisterModal = false">×</button>
+        </div>
+        <div class="modalBody">
+          <div v-if="formError" class="formError">{{ formError }}</div>
+          <div class="formGroup">
+            <label>头像URL（可选）</label>
+            <input
+              v-model="registerForm.avatarUrl"
+              type="text"
+              placeholder="https://example.com/avatar.png"
+            />
+          </div>
+          <div class="formGroup">
+            <label>用户名 <span class="required">*</span></label>
+            <input
+              v-model="registerForm.username"
+              type="text"
+              placeholder="至少3个字符"
+              @keyup.enter="handleRegister"
+            />
+            <span v-if="registerErrors.username" class="fieldError">{{ registerErrors.username }}</span>
+          </div>
+          <div class="formGroup">
+            <label>密码 <span class="required">*</span></label>
+            <input
+              v-model="registerForm.password"
+              type="password"
+              placeholder="至少6个字符"
+            />
+            <span v-if="registerErrors.password" class="fieldError">{{ registerErrors.password }}</span>
+          </div>
+          <div class="formGroup">
+            <label>确认密码 <span class="required">*</span></label>
+            <input
+              v-model="registerForm.confirmPassword"
+              type="password"
+              placeholder="再次输入密码"
+              @keyup.enter="handleRegister"
+            />
+            <span v-if="registerErrors.confirmPassword" class="fieldError">{{ registerErrors.confirmPassword }}</span>
+          </div>
+          <div class="formGroup">
+            <label>邮箱（可选）</label>
+            <input
+              v-model="registerForm.email"
+              type="email"
+              placeholder="your@email.com"
+            />
+            <span v-if="registerErrors.email" class="fieldError">{{ registerErrors.email }}</span>
+          </div>
+          <button class="submitBtn" @click="handleRegister">注册</button>
+          <div class="formFooter">
+            已有账号？
+            <a @click="showRegisterModal = false; showLoginModal = true">立即登录</a>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch } from "vue";
-import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName } from "./api.js";
+import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName, getUser } from "./api.js";
 
 // 定义 emits
 const emit = defineEmits(['switch-to-admin']);
 
-const user = { id: "user", name: "玿宸", short: "你" };
+// ========== 用户认证状态 ==========
+const currentUser = ref(null);
+const showLoginModal = ref(false);
+const showRegisterModal = ref(false);
+
+// 登录表单
+const loginForm = ref({
+  username: '',
+  password: '',
+});
+
+// 注册表单
+const registerForm = ref({
+  username: '',
+  password: '',
+  confirmPassword: '',
+  email: '',
+  avatarUrl: '', // 可选，使用默认头像
+});
+
+// 表单错误
+const formError = ref('');
+const registerErrors = ref({});
+
+// 用户信息（兼容原有逻辑）
+const user = computed(() => {
+  if (currentUser.value) {
+    return {
+      id: currentUser.value.user_id || "user",
+      name: currentUser.value.username || "用户",
+      short: currentUser.value.username?.substring(0, 1) || "你"
+    };
+  }
+  return { id: "user", name: "游客", short: "游" };
+});
+
 const keyword = ref("");
 const members = [
   { id: "theorist", name: "理论家", short: "理", role: "体系化", color: "#6aa7ff", desc: "梳理知识框架，把概念讲清楚、讲完整。" },
@@ -174,6 +321,12 @@ let currentWsHandler = null;
 
 // ========== 初始化加载 ==========
 onMounted(async () => {
+  // 初始化用户状态
+  const localUser = getUser();
+  if (localUser) {
+    currentUser.value = localUser;
+  }
+
   await loadChats();
   // 加载对话列表后，自动加载第一条对话的消息
   if (chats.value.length > 0) {
@@ -756,6 +909,108 @@ function goToAdmin() {
   emit('switch-to-admin');
 }
 
+// ========== 用户认证方法 ==========
+
+/**
+ * 用户登录
+ */
+async function handleLogin() {
+  formError.value = '';
+  if (!loginForm.value.username || !loginForm.value.password) {
+    formError.value = '请输入用户名和密码';
+    return;
+  }
+
+  try {
+    const result = await apiClient.login(loginForm.value.username, loginForm.value.password);
+    currentUser.value = result.user;
+    showLoginModal.value = false;
+    loginForm.value = { username: '', password: '' };
+  } catch (err) {
+    formError.value = err.message || '登录失败，请检查用户名和密码';
+  }
+}
+
+/**
+ * 用户注册
+ */
+async function handleRegister() {
+  formError.value = '';
+  registerErrors.value = {};
+
+  // 前端校验
+  const errors = {};
+  if (!registerForm.value.username || registerForm.value.username.length < 3) {
+    errors.username = '用户名至少3个字符';
+  }
+  if (!registerForm.value.password || registerForm.value.password.length < 6) {
+    errors.password = '密码至少6个字符';
+  }
+  if (registerForm.value.password !== registerForm.value.confirmPassword) {
+    errors.confirmPassword = '两次密码不一致';
+  }
+  if (registerForm.value.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.value.email)) {
+    errors.email = '邮箱格式不正确';
+  }
+
+  if (Object.keys(errors).length > 0) {
+    registerErrors.value = errors;
+    return;
+  }
+
+  try {
+    const result = await apiClient.register(
+      registerForm.value.username,
+      registerForm.value.password,
+      registerForm.value.email || null,
+      registerForm.value.avatarUrl || null
+    );
+    currentUser.value = result.user;
+    showRegisterModal.value = false;
+    registerForm.value = {
+      username: '',
+      password: '',
+      confirmPassword: '',
+      email: '',
+      avatarUrl: '',
+    };
+  } catch (err) {
+    formError.value = err.message || '注册失败，请重试';
+  }
+}
+
+/**
+ * 用户登出
+ */
+async function handleLogout() {
+  try {
+    await apiClient.logout();
+    currentUser.value = null;
+  } catch (err) {
+    console.error('登出失败:', err);
+    // 即使请求失败，也清除本地状态
+    currentUser.value = null;
+  }
+}
+
+/**
+ * 检查用户权限（是否可以导出）
+ */
+function canExport() {
+  return currentUser.value !== null;
+}
+
+/**
+ * 处理导出功能（带权限检查）
+ */
+function exportCurrentWithAuth(type) {
+  if (!canExport()) {
+    showLoginModal.value = true;
+    return;
+  }
+  exportCurrent(type);
+}
+
 </script>
 
 <style scoped>
@@ -1300,5 +1555,221 @@ function goToAdmin() {
 .bubble.loading {
   opacity: 0.8;
   border-style: dashed;
+}
+
+/* ========== 顶部导航栏右侧样式 ========== */
+.topbarRight {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.authBtn {
+  padding: 8px 16px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.authBtn.ghostBtn {
+  background: rgba(255,255,255,.05);
+  border: 1px solid rgba(255,255,255,.15);
+  color: var(--text);
+}
+
+.authBtn.ghostBtn:hover {
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.25);
+}
+
+.authBtn.primaryBtn {
+  background: rgba(106,167,255,.20);
+  border: 1px solid rgba(106,167,255,.40);
+  color: var(--text);
+}
+
+.authBtn.primaryBtn:hover {
+  background: rgba(106,167,255,.30);
+  border-color: rgba(106,167,255,.55);
+}
+
+.welcomeText {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ========== 登录/注册弹窗样式 ========== */
+.modalOverlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.modal {
+  background: linear-gradient(180deg, rgba(17,26,51,.98), rgba(10,16,34,.98));
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 20px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.45);
+  width: 90%;
+  max-width: 400px;
+  animation: modalIn .25s ease-out;
+}
+
+.modalLarge {
+  max-width: 480px;
+}
+
+@keyframes modalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.modalHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+}
+
+.modalHeader h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.closeBtn {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .18s ease;
+}
+
+.closeBtn:hover {
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.20);
+}
+
+.modalBody {
+  padding: 24px;
+}
+
+.formError {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(255,102,102,.15);
+  border: 1px solid rgba(255,102,102,.35);
+  color: #ff8888;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.formGroup {
+  margin-bottom: 16px;
+}
+
+.formGroup label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 6px;
+}
+
+.required {
+  color: #ff6b6b;
+}
+
+.formGroup input {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(255,255,255,.04);
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  transition: all .18s ease;
+  box-sizing: border-box;
+}
+
+.formGroup input:focus {
+  border-color: rgba(106,167,255,.45);
+  background: rgba(106,167,255,.08);
+  box-shadow: 0 0 0 3px rgba(106,167,255,.12);
+}
+
+.formGroup input::placeholder {
+  color: rgba(255,255,255,.40);
+}
+
+.fieldError {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: #ff6b6b;
+}
+
+.submitBtn {
+  width: 100%;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(106,167,255,.35);
+  background: rgba(106,167,255,.20);
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: all .18s ease;
+}
+
+.submitBtn:hover {
+  background: rgba(106,167,255,.30);
+  border-color: rgba(106,167,255,.50);
+}
+
+.formFooter {
+  text-align: center;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.formFooter a {
+  color: #6aa7ff;
+  cursor: pointer;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.formFooter a:hover {
+  text-decoration: underline;
 }
 </style>

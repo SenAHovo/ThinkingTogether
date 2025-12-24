@@ -18,7 +18,9 @@
       "Bash(curl:*)",
       "Bash(cmd:*)",
       "Bash(tasklist:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(pip install:*)",
+      "Bash(npm run build:*)"
     ],
     "deny": [],
     "ask": []

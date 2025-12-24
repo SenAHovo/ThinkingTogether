@@ -4,6 +4,40 @@
 const API_BASE_URL = 'http://localhost:8000/api';
 const WS_BASE_URL = 'ws://localhost:8000/ws/chat';
 
+// ========== 本地存储管理 ==========
+const TOKEN_KEY = 'access_token';
+const USER_KEY = 'current_user';
+
+function getToken() {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+function setToken(token) {
+  if (token) {
+    localStorage.setItem(TOKEN_KEY, token);
+  } else {
+    localStorage.removeItem(TOKEN_KEY);
+  }
+}
+
+function getUser() {
+  const userStr = localStorage.getItem(USER_KEY);
+  return userStr ? JSON.parse(userStr) : null;
+}
+
+function setUser(user) {
+  if (user) {
+    localStorage.setItem(USER_KEY, JSON.stringify(user));
+  } else {
+    localStorage.removeItem(USER_KEY);
+  }
+}
+
+function clearAuth() {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+}
+
 // ========== API 客户端类 ==========
 class ApiClient {
   constructor(baseUrl = API_BASE_URL) {
@@ -16,9 +50,12 @@ class ApiClient {
    */
   async request(url, options = {}) {
     const fullUrl = `${this.baseUrl}${url}`;
+    const token = getToken();
+
     const defaultOptions = {
       headers: {
         'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
     };
 
@@ -122,6 +159,88 @@ class ApiClient {
    */
   async healthCheck() {
     return this.request('/health');
+  }
+
+  // ========== 用户认证 API ==========
+
+  /**
+   * 用户注册
+   * POST /api/auth/register
+   */
+  async register(username, password, email = null, avatarUrl = null) {
+    const result = await this.request('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify({
+        username,
+        password,
+        email,
+        avatar_url: avatarUrl,
+      }),
+    });
+
+    // 保存令牌和用户信息
+    if (result.access_token) {
+      setToken(result.access_token);
+      setUser(result.user);
+    }
+
+    return result;
+  }
+
+  /**
+   * 用户登录
+   * POST /api/auth/login
+   */
+  async login(username, password) {
+    const result = await this.request('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ username, password }),
+    });
+
+    // 保存令牌和用户信息
+    if (result.access_token) {
+      setToken(result.access_token);
+      setUser(result.user);
+    }
+
+    return result;
+  }
+
+  /**
+   * 获取当前用户信息
+   * GET /api/auth/me
+   */
+  async getCurrentUser() {
+    return this.request('/auth/me');
+  }
+
+  /**
+   * 用户登出
+   * POST /api/auth/logout
+   */
+  async logout() {
+    try {
+      await this.request('/auth/logout', {
+        method: 'POST',
+      });
+    } finally {
+      // 无论请求是否成功，都清除本地存储
+      clearAuth();
+    }
+  }
+
+  /**
+   * 检查是否已登录
+   */
+  isAuthenticated() {
+    return !!getToken();
+  }
+
+  /**
+   * 获取本地存储的用户信息
+   */
+  getLocalUser() {
+    return getUser();
   }
 
   // ========== 管理员 API ==========
@@ -256,6 +375,9 @@ class ApiClient {
 
 // ========== 导出单例实例 ==========
 export const apiClient = new ApiClient();
+
+// ========== 导出认证相关函数 ==========
+export { getToken, setToken, getUser, setUser, clearAuth };
 
 // ========== 工具函数 ==========
 export function now() {
