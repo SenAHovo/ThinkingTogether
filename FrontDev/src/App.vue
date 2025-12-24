@@ -23,6 +23,10 @@
   placeholder="搜索会话…"
 />
 
+        <div class="exportRow">
+          <button class="topic" @click="exportCurrent('json')">导出 JSON</button>
+          <button class="topic topic2" @click="exportCurrent('txt')">导出 TXT</button>
+        </div>
 
         <div class="chatList">
   <div
@@ -51,12 +55,6 @@
   </div>
 </div>
 
-
-        <div class="exportRow">
-          <button class="topic" @click="exportCurrent('json')">导出 JSON</button>
-          <button class="topic topic2" @click="exportCurrent('txt')">导出 TXT</button>
-        </div>
-
         <div class="hint" v-if="error">
           {{ error }}
         </div>
@@ -68,6 +66,7 @@
           <div class="uName">{{ user.name }}</div>
           <div class="uSub">在线</div>
         </div>
+        <button class="admin-btn" @click="goToAdmin" title="管理后台">管</button>
         <button class="gear" title="设置（占位）">⚙</button>
       </div>
     </aside>
@@ -148,6 +147,9 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch } from "vue";
 import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName } from "./api.js";
+
+// 定义 emits
+const emit = defineEmits(['switch-to-admin']);
 
 const user = { id: "user", name: "玿宸", short: "你" };
 const keyword = ref("");
@@ -749,6 +751,11 @@ function exportCurrent(type) {
   download(`${c.title}.txt`, header + body);
 }
 
+function goToAdmin() {
+  window.location.hash = 'admin';
+  emit('switch-to-admin');
+}
+
 </script>
 
 <style scoped>
@@ -930,6 +937,9 @@ function exportCurrent(type) {
   display:flex;
   gap:10px;
   padding:10px 4px 0;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 1;
 }
 .topic{
   flex:1;
@@ -1017,8 +1027,21 @@ function exportCurrent(type) {
 .uMeta{ min-width:0; }
 .uName{ font-weight:900; }
 .uSub{ font-size:12px; color:var(--muted); margin-top:2px; }
-.gear{
+.admin-btn{
   margin-left:auto;
+  width:34px;height:34px;border-radius:12px;
+  border:1px solid rgba(199,125,255,.25);
+  background: rgba(199,125,255,.15);
+  color: var(--text);
+  cursor:pointer;
+  font-weight:800;
+}
+.admin-btn:hover{
+  background: rgba(199,125,255,.25);
+  border-color: rgba(199,125,255,.40);
+}
+.gear{
+  margin-left:8px;
   width:34px;height:34px;border-radius:12px;
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.04);

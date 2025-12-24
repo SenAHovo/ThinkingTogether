@@ -124,6 +124,75 @@ class ApiClient {
     return this.request('/health');
   }
 
+  // ========== 管理员 API ==========
+
+  /**
+   * 获取所有用户列表
+   * GET /api/admin/users
+   */
+  async getUsers() {
+    return this.request('/admin/users');
+  }
+
+  /**
+   * 创建新用户
+   * POST /api/admin/users
+   */
+  async createUser(userData) {
+    return this.request('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  /**
+   * 更新用户信息
+   * PUT /api/admin/users/{userId}
+   */
+  async updateUser(userId, userData) {
+    return this.request(`/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(userData),
+    });
+  }
+
+  /**
+   * 删除用户
+   * DELETE /api/admin/users/{userId}
+   */
+  async deleteUser(userId) {
+    return this.request(`/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * 获取所有对话公开请求
+   * GET /api/admin/publication-requests
+   */
+  async getPublicationRequests(status = 'pending') {
+    return this.request(`/admin/publication-requests?status=${status}`);
+  }
+
+  /**
+   * 审核对话公开请求
+   * POST /api/admin/publication-requests/{requestId}/review
+   */
+  async reviewPublicationRequest(requestId, approved, reason = '') {
+    return this.request(`/admin/publication-requests/${requestId}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ approved, reason }),
+    });
+  }
+
+  /**
+   * 获取已公开的对话列表
+   * GET /api/admin/public-chats
+   */
+  async getPublicChats() {
+    return this.request('/admin/public-chats');
+  }
+
   // ========== WebSocket 方法 ==========
 
   /**
