@@ -196,24 +196,29 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> Optio
         if not payload or payload.get("type") != "access":
             return None
 
-        # 从数据库获取用户信息
-        if _db_manager:
-            with _db_manager.get_cursor() as cursor:
-                cursor.execute(
-                    "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
-                    (payload.get("user_id"),)
-                )
-                user = cursor.fetchone()
-                if user:
-                    return {
-                        "user_id": user["user_id"],
-                        "username": user["username"],
-                        "email": user["email"],
-                        "avatar_url": user["avatar_url"],
-                        "role": user["role"],
-                        "is_active": user["is_active"],
-                        "is_verified": user["is_verified"],
-                    }
+        # 从数据库获取用户信息（如果数据库可用）
+        if _db_manager and _db_manager.connection:
+            try:
+                with _db_manager.get_cursor() as cursor:
+                    cursor.execute(
+                        "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
+                        (payload.get("user_id"),)
+                    )
+                    user = cursor.fetchone()
+                    if user:
+                        return {
+                            "user_id": user["user_id"],
+                            "username": user["username"],
+                            "email": user["email"],
+                            "avatar_url": user["avatar_url"],
+                            "role": user["role"],
+                            "is_active": user["is_active"],
+                            "is_verified": user["is_verified"],
+                        }
+            except Exception as db_err:
+                # 数据库查询失败，返回None
+                print(f"[API] 警告: 无法从数据库获取用户信息: {db_err}")
+
         return None
     except Exception as e:
         print(f"[API] 获取当前用户失败: {e}")
@@ -535,9 +540,14 @@ async def register(request: RegisterRequest):
 async def login(request: LoginRequest):
     """用户登录"""
     if not _db_manager:
-        raise HTTPException(status_code=500, detail="数据库未连接")
+        raise HTTPException(status_code=503, detail="数据库服务不可用，请稍后重试")
 
     try:
+        # 尝试连接数据库
+        if not _db_manager.connection:
+            if not _db_manager.connect():
+                raise HTTPException(status_code=503, detail="数据库连接失败，请稍后重试")
+
         with _db_manager.get_cursor() as cursor:
             # 查询用户
             cursor.execute(
@@ -568,12 +578,16 @@ async def login(request: LoginRequest):
             refresh_token = create_refresh_token(user["user_id"])
 
             # 保存刷新令牌到数据库
-            session_id = generate_session_id()
-            expires_at = datetime.now() + timedelta(days=30)
-            cursor.execute(
-                "INSERT INTO user_sessions (session_id, user_id, refresh_token, expires_at) VALUES (%s, %s, %s, %s)",
-                (session_id, user["user_id"], refresh_token, expires_at)
-            )
+            try:
+                session_id = generate_session_id()
+                expires_at = datetime.now() + timedelta(days=30)
+                cursor.execute(
+                    "INSERT INTO user_sessions (session_id, user_id, refresh_token, expires_at) VALUES (%s, %s, %s, %s)",
+                    (session_id, user["user_id"], refresh_token, expires_at)
+                )
+            except Exception as session_err:
+                # 会话保存失败，但仍允许登录
+                print(f"[API] 警告: 无法保存用户会话: {session_err}")
 
             return {
                 "message": "登录成功",
@@ -591,7 +605,7 @@ async def login(request: LoginRequest):
         raise
     except Exception as e:
         print(f"[API] 登录失败: {e}")
-        raise HTTPException(status_code=500, detail="登录失败")
+        raise HTTPException(status_code=500, detail="登录失败，请稍后重试")
 
 
 @app.get("/api/auth/me")
@@ -629,13 +643,17 @@ async def logout(
         payload = decode_token(token)
 
         if payload and payload.get("user_id"):
-            # 删除用户的所有会话
-            if _db_manager:
-                with _db_manager.get_cursor() as cursor:
-                    cursor.execute(
-                        "DELETE FROM user_sessions WHERE user_id = %s",
-                        (payload.get("user_id"),)
-                    )
+            # 尝试删除用户的所有会话（如果数据库可用）
+            if _db_manager and _db_manager.connection:
+                try:
+                    with _db_manager.get_cursor() as cursor:
+                        cursor.execute(
+                            "DELETE FROM user_sessions WHERE user_id = %s",
+                            (payload.get("user_id"),)
+                        )
+                except Exception as session_err:
+                    # 会话删除失败，但不影响登出
+                    print(f"[API] 警告: 无法删除用户会话: {session_err}")
 
         return {"message": "登出成功"}
     except Exception as e:

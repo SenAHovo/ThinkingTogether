@@ -42,10 +42,15 @@ class DatabaseManager:
                 charset=self.charset,
                 cursorclass=pymysql.cursors.DictCursor
             )
-            print(f"成功连接到数据库: {self.database}")
+            print(f"成功连接到数据库: {self.database} @ {self.host}:{self.port}")
             return True
         except Exception as e:
-            print(f"数据库连接失败: {e}")
+            print(f"[数据库错误] 连接失败: {e}")
+            print(f"[数据库错误] 连接参数: host={self.host}, port={self.port}, user={self.user}, database={self.database}")
+            print(f"[数据库错误] 请检查:")
+            print(f"  1. MySQL服务是否已启动")
+            print(f"  2. 数据库 '{self.database}' 是否已创建")
+            print(f"  3. 用户 '{self.user}' 的密码是否正确")
             return False
 
     def disconnect(self):
@@ -327,14 +332,26 @@ class DatabaseManager:
             return False
 
 
-# 创建全局数据库管理器实例并自动连接
-db_manager = DatabaseManager.from_config()
-db_manager.connect()
-
+# 创建全局数据库管理器实例（但不自动连接）
+db_manager = None
 
 def get_db_manager() -> DatabaseManager:
-    """获取数据库管理器实例"""
+    """获取数据库管理器实例（单例模式，延迟连接）"""
+    global db_manager
+    if db_manager is None:
+        db_manager = DatabaseManager.from_config()
     return db_manager
+
+def ensure_db_connected() -> bool:
+    """确保数据库已连接，返回是否连接成功"""
+    try:
+        manager = get_db_manager()
+        if manager.connection is None:
+            return manager.connect()
+        return True
+    except Exception as e:
+        print(f"[数据库错误] 无法连接到数据库: {e}")
+        return False
 
 
 # 装饰器函数，用于自动保存智能体输出

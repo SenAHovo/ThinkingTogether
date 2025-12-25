@@ -149,7 +149,7 @@ def apply_patch(state: DiscussionState, patch: Dict[str, Any]):
     # 如果启用了持久化存储，同时保存到数据库
     if os.getenv('USE_PERSISTENT_STORAGE', 'true').lower() == 'true':
         try:
-            from mysql.persistent_store import persistent_state_store
+            from dev.mysql.persistent_store import persistent_state_store
             persistent_state_store.save_state(state)
         except Exception as e:
             print(f"保存状态到数据库失败: {e}")
@@ -161,7 +161,7 @@ def load_state_from_db(thread_id: str) -> Optional[DiscussionState]:
         return None
 
     try:
-        from mysql.persistent_store import persistent_state_store
+        from dev.mysql.persistent_store import persistent_state_store
         state_data = persistent_state_store.load_state(thread_id)
         if state_data:
             state = DiscussionState(thread_id=thread_id, topic=state_data['topic'])

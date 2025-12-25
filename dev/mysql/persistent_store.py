@@ -21,11 +21,28 @@ class PersistentHistoryStore:
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db_manager = db_manager or get_db_manager()
         self.content_analyzer = get_content_analyzer()
+        self.db_available = False  # 跟踪数据库是否可用
+
+        # 尝试连接数据库
+        try:
+            if self.db_manager.connect():
+                self.db_available = True
+                print("[持久化存储] 数据库连接成功")
+            else:
+                print("[持久化存储] 数据库连接失败，将使用降级模式（仅内存）")
+        except Exception as e:
+            print(f"[持久化存储] 数据库初始化失败: {e}，将使用降级模式（仅内存）")
+            self.db_available = False
 
     def _ensure_thread_exists(self, thread_id: str, topic: str = "未命名话题"):
         """确保线程在数据库中存在"""
+        if not self.db_available:
+            return
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -38,11 +55,17 @@ class PersistentHistoryStore:
                     print(f"[持久化存储] 新线程已创建: {thread_id}")
         except Exception as e:
             print(f"[持久化存储] 创建线程失败: {e}")
+            self.db_available = False
 
     def _update_thread_stats(self, thread_id: str, speaker: str, content: str):
         """更新线程统计信息"""
+        if not self.db_available:
+            return
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -57,9 +80,13 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 更新统计失败: {e}")
+            self.db_available = False
 
     def _save_analysis_results(self, thread_id: str, event_id: str, extracted: ExtractedContent):
         """保存分析结果"""
+        if not self.db_available:
+            return
+
         try:
             with self.db_manager.get_cursor() as cursor:
                 # 保存共识到consensus表
@@ -85,6 +112,7 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 保存分析结果失败: {e}")
+            self.db_available = False
 
     def append(
         self,
@@ -95,8 +123,33 @@ class PersistentHistoryStore:
         topic: Optional[str] = None
     ) -> Dict[str, Any]:
         """添加事件到数据库"""
+        if not self.db_available:
+            # 数据库不可用，返回虚拟事件（降级模式）
+            event_id = uuid.uuid4().hex
+            return {
+                "event_id": event_id,
+                "speaker": speaker,
+                "content": content.strip(),
+                "turn_id": 0,
+                "tags": list(tags) if tags else [],
+                "created_at": datetime.now().isoformat(),
+                "warning": "数据库不可用，数据未持久化"
+            }
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                # 连接失败，返回虚拟事件
+                event_id = uuid.uuid4().hex
+                return {
+                    "event_id": event_id,
+                    "speaker": speaker,
+                    "content": content.strip(),
+                    "turn_id": 0,
+                    "tags": list(tags) if tags else [],
+                    "created_at": datetime.now().isoformat(),
+                    "warning": "数据库连接失败，数据未持久化"
+                }
 
         # 确保线程存在
         self._ensure_thread_exists(thread_id, topic or "未命名话题")
@@ -110,6 +163,7 @@ class PersistentHistoryStore:
         except Exception as e:
             print(f"[持久化存储] 获取turn_id失败: {e}")
             turn_id = 1
+            self.db_available = False
 
         # 创建事件
         event_id = uuid.uuid4().hex
@@ -153,6 +207,7 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 保存事件失败: {e}")
+            self.db_available = False
             # 返回一个虚拟事件以保持兼容性
             return {
                 "event_id": event_id,
@@ -174,8 +229,13 @@ class PersistentHistoryStore:
 
     def tail(self, thread_id: str, n: int = 10) -> List[Dict[str, Any]]:
         """获取最后n个事件"""
+        if not self.db_available:
+            return []
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return []
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -202,12 +262,18 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 获取历史记录失败: {e}")
+            self.db_available = False
             return []
 
     def all(self, thread_id: str) -> List[Dict[str, Any]]:
         """获取所有事件"""
+        if not self.db_available:
+            return []
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return []
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -230,12 +296,18 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 获取所有事件失败: {e}")
+            self.db_available = False
             return []
 
     def size(self, thread_id: str) -> int:
         """获取事件数量"""
+        if not self.db_available:
+            return 0
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return 0
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -244,12 +316,18 @@ class PersistentHistoryStore:
                 return result['count'] if result else 0
         except Exception as e:
             print(f"[持久化存储] 获取事件数量失败: {e}")
+            self.db_available = False
             return 0
 
     def clear(self, thread_id: str):
         """清除线程数据"""
+        if not self.db_available:
+            return
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -264,11 +342,17 @@ class PersistentHistoryStore:
             print(f"[持久化存储] 线程数据已清除: {thread_id}")
         except Exception as e:
             print(f"[持久化存储] 清除线程数据失败: {e}")
+            self.db_available = False
 
     def get_thread_analysis(self, thread_id: str) -> Dict[str, Any]:
         """获取线程分析摘要"""
+        if not self.db_available:
+            return {'thread_id': thread_id, 'error': '数据库不可用'}
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return {'thread_id': thread_id, 'error': '数据库连接失败'}
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -318,6 +402,7 @@ class PersistentHistoryStore:
 
         except Exception as e:
             print(f"[持久化存储] 获取线程分析失败: {e}")
+            self.db_available = False
             return {'thread_id': thread_id, 'error': str(e)}
 
 
@@ -326,11 +411,28 @@ class PersistentStateStore:
 
     def __init__(self, db_manager: Optional[DatabaseManager] = None):
         self.db_manager = db_manager or get_db_manager()
+        self.db_available = False  # 跟踪数据库是否可用
+
+        # 尝试连接数据库
+        try:
+            if self.db_manager.connect():
+                self.db_available = True
+                print("[持久化存储] 状态存储：数据库连接成功")
+            else:
+                print("[持久化存储] 状态存储：数据库连接失败，将使用降级模式")
+        except Exception as e:
+            print(f"[持久化存储] 状态存储：数据库初始化失败: {e}，将使用降级模式")
+            self.db_available = False
 
     def save_state(self, state: 'DiscussionState'):
         """保存讨论状态到数据库"""
+        if not self.db_available:
+            return
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -386,6 +488,7 @@ class PersistentStateStore:
 
         except Exception as e:
             print(f"[持久化存储] 保存状态失败: {e}")
+            self.db_available = False
 
     def _save_list_field(self, cursor, thread_id: str, field_type: str, items: List[str]):
         """保存列表字段到相应的表"""
@@ -410,8 +513,13 @@ class PersistentStateStore:
 
     def load_state(self, thread_id: str) -> Optional[Dict[str, Any]]:
         """从数据库加载状态"""
+        if not self.db_available:
+            return None
+
         if not self.db_manager.connection:
-            self.db_manager.connect()
+            if not self.db_manager.connect():
+                self.db_available = False
+                return None
 
         try:
             with self.db_manager.get_cursor() as cursor:
@@ -460,6 +568,7 @@ class PersistentStateStore:
 
         except Exception as e:
             print(f"[持久化存储] 加载状态失败: {e}")
+            self.db_available = False
             return None
 
 

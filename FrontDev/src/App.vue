@@ -130,22 +130,27 @@
         </div>
 
         <div class="inputRow">
-          <textarea
-            v-model="draft"
-            class="input"
-            rows="2"
-            placeholder="作为第五位成员插话：提问 / 反驳 / 补充 / 总结……"
-            @keydown.enter.exact.prevent="send()"
-            :disabled="isSending || isCreating"
-          />
-          <button class="continue-btn" :disabled="isSending || isCreating" @click="askAI" title="让AI继续发言">
-            继续
-          </button>
+          <div class="inputWrapper">
+            <textarea
+              ref="inputRef"
+              v-model="draft"
+              class="input"
+              rows="2"
+              :placeholder="inputPlaceholder"
+              @keydown.enter.exact.prevent="handleSendOrContinue()"
+              :disabled="isSending || isCreating"
+            />
+            <button
+              class="sendArrowBtn"
+              :disabled="isSending || isCreating"
+              @click="handleSendOrContinue()"
+              :title="draft.trim() ? '发送消息' : '继续讨论'"
+            >
+              ↑
+            </button>
+          </div>
           <button class="summary-btn" :disabled="isSending || isCreating" @click="summarize" title="生成当前对话总结">
             总结
-          </button>
-          <button class="send" :disabled="!draft.trim() || isSending || isCreating" @click="send">
-            {{ isSending ? '发送中...' : isCreating ? '创建中...' : '发送' }}
           </button>
         </div>
 
@@ -324,6 +329,7 @@ let currentWsHandler = null;
 // ========== DOM 引用 ==========
 const chatContainer = ref(null);
 const timelineRef = ref(null);
+const inputRef = ref(null);
 
 /**
  * 滚动聊天区域到底部
@@ -337,6 +343,15 @@ function scrollToBottom(smooth = true) {
       });
     }
   });
+}
+
+/**
+ * 聚焦输入框
+ */
+function focusInput() {
+  if (inputRef.value) {
+    inputRef.value.focus();
+  }
 }
 
 // ========== 初始化加载 ==========
@@ -572,6 +587,7 @@ const visibleChats = computed(() => {
 const activeChatId = ref(null);
 const draft = ref("");
 const quoted = ref(null);
+const waitingForUser = ref(false); // 标记是否等待用户操作
 
 const activeChat = computed(() => {
   if (chats.value.length === 0) {
@@ -588,6 +604,14 @@ const activeChat = computed(() => {
     activeChatId.value = chats.value[0].id;
   }
   return chats.value.find((c) => c.id === activeChatId.value) || chats.value[0];
+});
+
+// 输入框占位符
+const inputPlaceholder = computed(() => {
+  if (waitingForUser.value) {
+    return "按 Enter 继续（空输入）或输入你的观点…";
+  }
+  return "作为第五位成员插话：提问 / 反驳 / 补充 / 总结…";
 });
 
 // ========== 监听当前对话变化，建立WebSocket连接 ==========
@@ -685,6 +709,28 @@ async function send() {
       if (idx !== -1) {
         chats.value[idx] = realChat;
         activeChatId.value = realChat.id;
+
+        // 检查最后一个发言者，如果是组织者，自动触发下一个智能体发言
+        const lastMsg = realChat.messages[realChat.messages.length - 1];
+        console.log('[创建对话] 最后一条消息:', lastMsg);
+        console.log('[创建对话] 作者ID:', lastMsg?.authorId, '作者名称:', lastMsg?.author_name);
+
+        // 同时检查 authorId 和 author_name，兼容不同的后端返回格式
+        const isFacilitator = lastMsg && (
+          lastMsg.authorId === 'facilitator' ||
+          lastMsg.author_name === '组织者' ||
+          lastMsg.role === '主持'
+        );
+
+        if (isFacilitator) {
+          console.log('[创建对话] 检测到组织者发言，1秒后自动触发下一个智能体');
+          setTimeout(() => {
+            askAI(true);
+          }, 1000);
+        } else {
+          console.log('[创建对话] 最后一条消息不是组织者，等待用户操作');
+          waitingForUser.value = true;
+        }
       }
     } catch (err) {
       console.error('创建对话失败:', err);
@@ -763,12 +809,21 @@ async function send() {
 
     chat.updatedAt = result.updated_at || stamp();
     scrollToBottom();
+
+    // 用户发送消息后，直接等待用户操作，不再自动触发
+    waitingForUser.value = true;
+
+    // 聚焦回输入框
+    nextTick(() => {
+      focusInput();
+    });
   } catch (err) {
     console.error('发送消息失败:', err);
     // 失败时移除loading消息
     chat.messages = chat.messages.filter(m => !m.isLoading);
     // 恢复输入内容
     draft.value = text;
+    waitingForUser.value = true;
     alert('发送失败: ' + err.message);
   } finally {
     isSending.value = false;
@@ -779,14 +834,27 @@ function quote(msg) {
   quoted.value = `${nameOf(msg.authorId)}：${msg.text?.split("\n")[0] || ''}`;
 }
 
-async function askAI() {
+async function askAI(isAutoTriggered = false) {
   if (!activeChat.value || isSending.value) return;
   if (activeChat.value.id === 'empty') {
     alert('请先选择或创建一个对话');
     return;
   }
 
+  // 清空输入框（如果用户输入了内容）
+  if (!isAutoTriggered) {
+    const text = draft.value.trim();
+    if (text) {
+      // 用户输入了内容，作为用户消息发送
+      send();
+      return;
+    }
+  }
+
   isSending.value = true;
+  waitingForUser.value = false;
+  draft.value = "";
+  quoted.value = null;
   const chat = activeChat.value;
 
   try {
@@ -835,13 +903,42 @@ async function askAI() {
 
     chat.updatedAt = result.updated_at || stamp();
     scrollToBottom();
+
+    // 智能体发言完毕，等待用户决定
+    waitingForUser.value = true;
+
+    // 聚焦回输入框
+    nextTick(() => {
+      focusInput();
+    });
   } catch (err) {
     console.error('继续对话失败:', err);
     // 失败时移除loading消息
     chat.messages = chat.messages.filter(m => !m.isLoading);
+    waitingForUser.value = true;
     alert('继续对话失败: ' + err.message);
   } finally {
     isSending.value = false;
+  }
+}
+
+/**
+ * 处理发送或继续操作
+ * - 如果输入框有内容：发送用户消息
+ * - 如果输入框为空：继续讨论（让AI发言）
+ */
+async function handleSendOrContinue() {
+  if (isSending.value || isCreating.value) return;
+
+  const text = draft.value.trim();
+
+  if (text) {
+    // 有内容：发送用户消息
+    waitingForUser.value = false;
+    await send();
+  } else {
+    // 无内容：继续讨论
+    await askAI(false);
   }
 }
 
@@ -1472,6 +1569,13 @@ function exportCurrentWithAuth(type) {
   gap:10px;
   align-items:flex-end;
 }
+.inputWrapper{
+  flex:1;
+  position:relative;
+  display:flex;
+  align-items:flex-end;
+  gap:8px;
+}
 .input{
   flex:1;
   resize:none;
@@ -1479,26 +1583,35 @@ function exportCurrentWithAuth(type) {
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.05);
   color: var(--text);
-  padding:12px 12px;
+  padding:12px 50px 12px 12px;
   outline:none;
 }
 .input:focus{ border-color: rgba(106,167,255,.35); }
-.continue-btn{
-  padding:12px 14px;
-  border-radius:14px;
-  border:1px solid rgba(81,209,138,.25);
-  background: rgba(81,209,138,.18);
+.sendArrowBtn{
+  position:absolute;
+  right:8px;
+  bottom:8px;
+  width:36px;
+  height:36px;
+  border-radius:10px;
+  border:1px solid rgba(106,167,255,.25);
+  background: rgba(106,167,255,.18);
   color: var(--text);
+  font-size:18px;
   font-weight:900;
   cursor:pointer;
-  min-width: 70px;
   transition: all .18s ease;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  line-height:1;
 }
-.continue-btn:hover:not(:disabled){
+.sendArrowBtn:hover:not(:disabled){
   filter: brightness(1.05);
-  border-color: rgba(81,209,138,.45);
+  border-color: rgba(106,167,255,.45);
+  background: rgba(106,167,255,.25);
 }
-.continue-btn:disabled{ opacity:.45; cursor:not-allowed; }
+.sendArrowBtn:disabled{ opacity:.45; cursor:not-allowed; }
 .summary-btn{
   padding:12px 14px;
   border-radius:14px;
@@ -1515,22 +1628,6 @@ function exportCurrentWithAuth(type) {
   border-color: rgba(199,125,255,.45);
 }
 .summary-btn:disabled{ opacity:.45; cursor:not-allowed; }
-.send{
-  padding:12px 14px;
-  border-radius:14px;
-  border:1px solid rgba(106,167,255,.25);
-  background: rgba(106,167,255,.18);
-  color: var(--text);
-  font-weight:900;
-  cursor:pointer;
-  min-width: 90px;
-  transition: all .18s ease;
-}
-.send:hover:not(:disabled){
-  filter: brightness(1.05);
-  border-color: rgba(106,167,255,.45);
-}
-.send:disabled{ opacity:.45; cursor:not-allowed; }
 .tips{
   max-width:980px;
   margin:10px auto 0;
