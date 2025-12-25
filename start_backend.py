@@ -45,20 +45,43 @@ def main():
 
     print(f"启动后端服务...")
     print(f"端口: {port}")
-    print(f"API文档: http://localhost:{port}/docs")
-    print(f"健康检查: http://localhost:{port}/api/health")
-    print()
-    print("按 Ctrl+C 停止服务")
-    print("=" * 50)
     print()
 
     try:
-        subprocess.run(
+        # 使用 Popen 以便实时捕获输出
+        process = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "dev.api.server:app",
-             "--host", "0.0.0.0", "--port", str(port), "--log-level", "info"]
+             "--host", "0.0.0.0", "--port", str(port), "--log-level", "info"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            encoding='utf-8',
+            errors='replace',
+            bufsize=1,
+            universal_newlines=True
         )
-    except KeyboardInterrupt:
-        print("\n服务已停止")
+
+        # 监听输出，等待服务启动完成
+        startup_complete = False
+        try:
+            for line in process.stdout:
+                print(line, end='')  # 实时输出日志
+                if not startup_complete and "Application startup complete" in line:
+                    startup_complete = True
+                    print()
+                    print("=" * 50)
+                    print("后端服务启动成功！")
+                    print(f"API文档: http://localhost:{port}/docs")
+                    print(f"健康检查: http://localhost:{port}/api/health")
+                    print("=" * 50)
+                    print()
+        except KeyboardInterrupt:
+            print("\n正在停止服务...")
+            process.terminate()
+            process.wait()
+            print("服务已停止")
+
+    except Exception as e:
+        print(f"启动失败: {e}")
 
 
 if __name__ == "__main__":
