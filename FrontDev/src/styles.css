@@ -10,6 +10,14 @@
   --warn:#ffcc66;
 }
 
+body{
+  transition: background 0.3s ease;
+}
+
+:root[data-theme="light"] body {
+  background: #ffffff !important;
+}
+
 *{ box-sizing:border-box; }
 html,body,#app{ height:100%; }
 body{

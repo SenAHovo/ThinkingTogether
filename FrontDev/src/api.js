@@ -312,6 +312,91 @@ class ApiClient {
     return this.request('/admin/public-chats');
   }
 
+  /**
+   * 获取公开对话大厅（按点赞排序）
+   * GET /api/public/chats
+   */
+  async getPublicChatHall(limit = 20) {
+    return this.request(`/public/chats?limit=${limit}`);
+  }
+
+  /**
+   * 点赞对话
+   * POST /api/chats/{chatId}/like
+   */
+  async likeChat(chatId) {
+    return this.request(`/chats/${chatId}/like`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * 取消点赞对话
+   * DELETE /api/chats/{chatId}/like
+   */
+  async unlikeChat(chatId) {
+    return this.request(`/chats/${chatId}/like`, {
+      method: 'DELETE',
+    });
+  }
+
+  /**
+   * 公开对话
+   * POST /api/chats/{chatId}/publish
+   */
+  async publishChat(chatId) {
+    return this.request(`/chats/${chatId}/publish`, {
+      method: 'POST',
+    });
+  }
+
+  /**
+   * 获取用户的所有对话（用于导出）
+   * GET /api/chats/export
+   */
+  async exportAllChats() {
+    return this.request('/chats/export');
+  }
+
+  /**
+   * 删除用户的所有对话
+   * DELETE /api/chats/all
+   */
+  async deleteAllChats() {
+    return this.request('/chats/all', {
+      method: 'DELETE',
+    });
+  }
+
+  // ========== 用户个人信息 API ==========
+
+  /**
+   * 更新用户个人信息
+   * PUT /api/user/profile
+   */
+  async updateProfile(data) {
+    const result = await this.request('/user/profile', {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+    // 更新本地存储的用户信息
+    if (result.user) {
+      setUser(result.user);
+    }
+    return result;
+  }
+
+  /**
+   * 修改密码
+   * PUT /api/user/password
+   */
+  async changePassword(oldPassword, newPassword) {
+    return this.request('/user/password', {
+      method: 'PUT',
+      body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    });
+  }
+
   // ========== WebSocket 方法 ==========
 
   /**

@@ -15,14 +15,18 @@
 
     <main class="main">
       <div class="tabs">
+        <!-- 只有超级管理员才能看到用户管理标签 -->
         <button
+          v-if="currentUser && (currentUser.role === 'super_admin')"
           class="tab"
           :class="{ active: activeTab === 'users' }"
           @click="activeTab = 'users'"
         >
           用户管理
         </button>
+        <!-- 管理员和超级管理员都可以看到对话审核 -->
         <button
+          v-if="currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin')"
           class="tab"
           :class="{ active: activeTab === 'requests' }"
           @click="activeTab = 'requests'"
@@ -30,7 +34,9 @@
           对话审核
           <span v-if="pendingCount > 0" class="badge">{{ pendingCount }}</span>
         </button>
+        <!-- 管理员和超级管理员都可以看到已公开对话 -->
         <button
+          v-if="currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin')"
           class="tab"
           :class="{ active: activeTab === 'public' }"
           @click="activeTab = 'public'"
@@ -68,10 +74,10 @@
             <tbody>
               <tr v-for="user in filteredUsers" :key="user.id">
                 <td class="mono">{{ user.id.slice(0, 8) }}...</td>
-                <td>{{ user.username }}</td>
+                <td :class="['username-cell', user.role]">{{ user.username }}</td>
                 <td>{{ user.email }}</td>
                 <td>
-                  <span class="role-tag" :class="user.role">{{ user.role === 'admin' ? '管理员' : '用户' }}</span>
+                  <span class="role-tag" :class="user.role">{{ getRoleName(user.role) }}</span>
                 </td>
                 <td>
                   <span class="status-tag" :class="{ active: user.is_active }">
@@ -224,6 +230,7 @@
             <select v-model="userForm.role" class="form-input">
               <option value="user">普通用户</option>
               <option value="admin">管理员</option>
+              <option value="super_admin">超级管理员</option>
             </select>
           </div>
           <div class="form-group checkbox">
@@ -285,12 +292,32 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
+
+const props = defineProps({
+  currentUser: {
+    type: Object,
+    default: null,
+  }
+});
 
 defineEmits(['back']);
 
+// 根据用户角色设置默认标签页
+const getDefaultTab = () => {
+  if (!props.currentUser) return 'requests';
+
+  const role = props.currentUser.role || 'user';
+  if (role === 'super_admin') {
+    return 'users'; // 超级管理员默认显示用户管理
+  } else if (role === 'admin') {
+    return 'requests'; // 管理员默认显示对话审核
+  }
+  return 'requests';
+};
+
 // 标签页状态
-const activeTab = ref('users');
+const activeTab = ref(getDefaultTab());
 
 // 用户管理相关
 const users = ref([]);
@@ -334,6 +361,17 @@ function formatDate(dateStr) {
   });
 }
 
+// 获取角色显示名称
+function getRoleName(role) {
+  const roleMap = {
+    'guest': '游客',
+    'user': '普通用户',
+    'admin': '管理员',
+    'super_admin': '超级管理员'
+  };
+  return roleMap[role] || role;
+}
+
 // 测试用户数据
 function getMockUsers() {
   return [
@@ -341,7 +379,8 @@ function getMockUsers() {
     { id: '2b3c4d5e-6f7g-8h9i-0j1k-2l3m4n5o6p7q', username: '张三', email: 'zhangsan@example.com', role: 'user', is_active: true, created_at: '2024-01-16T14:20:00' },
     { id: '3c4d5e6f-7g8h-9i0j-1k2l-3m4n5o6p7q8r', username: '李四', email: 'lisi@example.com', role: 'user', is_active: true, created_at: '2024-01-17T09:15:00' },
     { id: '4d5e6f7g-8h9i-0j1k-2l3m-4n5o6p7q8r9s', username: '王五', email: 'wangwu@example.com', role: 'user', is_active: false, created_at: '2024-01-18T16:45:00' },
-    { id: '5e6f7g8h-9i0j-1k2l-3m4n-5o6p7q8r9s0t', username: '管理员', email: 'admin@example.com', role: 'admin', is_active: true, created_at: '2024-01-10T09:00:00' },
+    { id: '5e6f7g8h-9i0j-1k2l-3m4n-5o6p7q8r9s0t', username: 'admin', email: 'admin@example.com', role: 'admin', is_active: true, created_at: '2024-01-10T09:00:00' },
+    { id: '6f7g8h9i-0j1k-2l3m-4n5o6p7q8r9s0t1u', username: 'superadmin', email: 'superadmin@example.com', role: 'super_admin', is_active: true, created_at: '2024-01-01T08:00:00' },
   ];
 }
 
@@ -561,7 +600,6 @@ onMounted(() => {
 
 <style scoped>
 .admin {
-  height: 100vh;
   display: flex;
   flex-direction: column;
   background: radial-gradient(1200px 800px at 20% 0%, #14204a 0%, #0b1020 55%);
@@ -807,6 +845,23 @@ onMounted(() => {
 .role-tag.admin{
   background: rgba(199,125,255,.18) !important;
   border-color: rgba(199,125,255,.35) !important;
+  color: #c77dff !important;
+}
+
+.role-tag.super_admin{
+  background: rgba(255,199,89,.18) !important;
+  border-color: rgba(255,199,89,.35) !important;
+  color: #ffc757 !important;
+}
+
+.username-cell.admin {
+  color: #c77dff;
+  font-weight: 700;
+}
+
+.username-cell.super_admin {
+  color: #ffc757;
+  font-weight: 700;
 }
 
 
@@ -942,6 +997,15 @@ onMounted(() => {
 .preview-message {
   font-size: 13px;
   line-height: 1.5;
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid rgba(255,255,255,.15);
+}
+
+.preview-message:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
 }
 
 .msg-author {
@@ -1152,5 +1216,245 @@ onMounted(() => {
 .form-textarea {
   resize: vertical;
   min-height: 80px;
+}
+
+/* ========== 浅色模式样式 ========== */
+:root[data-theme="light"] .admin {
+  background: #f5f5f5;
+}
+
+:root[data-theme="light"] .topbar {
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .title .name {
+  color: #000000;
+}
+
+:root[data-theme="light"] .title .sub {
+  color: #666666;
+}
+
+:root[data-theme="light"] .logo {
+  background: rgba(199, 125, 255, 0.2);
+  border-color: rgba(199, 125, 255, 0.4);
+  color: #c77dff;
+}
+
+:root[data-theme="light"] .back-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #000000;
+}
+
+:root[data-theme="light"] .back-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .tabs {
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .tab {
+  color: #666666;
+}
+
+:root[data-theme="light"] .tab:hover {
+  color: #000000;
+  background: rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .tab.active {
+  color: #000000;
+  background: rgba(106, 167, 255, 0.15);
+  border-color: rgba(106, 167, 255, 0.3);
+}
+
+:root[data-theme="light"] .tab-content {
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .table-container {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .data-table th {
+  color: #666666;
+  background: #f5f5f5;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .data-table td {
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  color: #000000;
+}
+
+:root[data-theme="light"] .data-table tr:hover td {
+  background: #f9f9f9;
+}
+
+:root[data-theme="light"] .search-input,
+:root[data-theme="light"] .status-select {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #000000;
+}
+
+:root[data-theme="light"] .search-input:focus,
+:root[data-theme="light"] .status-select:focus {
+  border-color: rgba(106, 167, 255, 0.4);
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .primary-btn,
+:root[data-theme="light"] .refresh-btn {
+  background: linear-gradient(135deg, #6a7dff 0%, #9d6aff 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .secondary-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #000000;
+}
+
+:root[data-theme="light"] .danger-btn {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ff8787 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .role-tag {
+  background: rgba(106, 167, 255, 0.15);
+  border-color: rgba(106, 167, 255, 0.3);
+  color: #6a7dff;
+}
+
+:root[data-theme="light"] .role-tag.admin {
+  background: rgba(199, 125, 255, 0.2);
+  border-color: rgba(199, 125, 255, 0.4);
+  color: #c77dff;
+}
+
+:root[data-theme="light"] .role-tag.super_admin {
+  background: rgba(255, 199, 89, 0.2);
+  border-color: rgba(255, 199, 89, 0.4);
+  color: #ffc757;
+}
+
+:root[data-theme="light"] .username-cell.admin {
+  color: #c77dff;
+}
+
+:root[data-theme="light"] .username-cell.super_admin {
+  color: #ffc757;
+}
+
+:root[data-theme="light"] .request-card,
+:root[data-theme="light"] .public-chat-card {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .request-card:hover,
+:root[data-theme="light"] .public-chat-card:hover {
+  background: #f9f9f9;
+  border-color: rgba(106, 167, 255, 0.2);
+}
+
+:root[data-theme="light"] .request-title,
+:root[data-theme="light"] .chat-title {
+  color: #000000;
+}
+
+:root[data-theme="light"] .request-meta,
+:root[data-theme="light"] .chat-meta,
+:root[data-theme="light"] .chat-stats,
+:root[data-theme="light"] .section-label {
+  color: #666666;
+}
+
+:root[data-theme="light"] .section-content {
+  color: #000000;
+}
+
+:root[data-theme="light"] .chat-preview {
+  background: #f5f5f5;
+}
+
+:root[data-theme="light"] .preview-message {
+  border-bottom: 1px solid rgba(0,0,0,.15);
+}
+
+:root[data-theme="light"] .msg-author {
+  color: #6a7dff;
+}
+
+:root[data-theme="light"] .modal {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .modal-header h3 {
+  color: #000000;
+}
+
+:root[data-theme="light"] .close-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #000000;
+}
+
+:root[data-theme="light"] .form-group label {
+  color: #666666;
+}
+
+:root[data-theme="light"] .form-input,
+:root[data-theme="light"] .form-textarea {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #000000;
+}
+
+:root[data-theme="light"] .form-input:focus,
+:root[data-theme="light"] .form-textarea:focus {
+  border-color: rgba(106, 167, 255, 0.4);
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .empty-state {
+  color: #999999;
+}
+
+:root[data-theme="light"] .approve-btn {
+  background: linear-gradient(135deg, #51d18a 0%, #7dd19a 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .reject-btn {
+  background: linear-gradient(135deg, #ff6b6b 0%, #ff8787 100%);
+  border-color: transparent;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .icon-btn {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: #666666;
+}
+
+:root[data-theme="light"] .icon-btn:hover {
+  background: rgba(0, 0, 0, 0.1);
+  color: #000000;
+}
+
+:root[data-theme="light"] .icon-btn.danger:hover {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
 }
 </style>

@@ -10,6 +10,40 @@
         </div>
       </div>
 
+      <!-- 已公开历史对话轮播图 -->
+      <div class="section carouselSection">
+        <div class="sectionTitle rowBetween">
+          <span>已公开对话</span>
+          <button class="ghost" @click="refreshPublicChats">刷新</button>
+        </div>
+
+        <div class="publicChatCarousel">
+          <div
+            v-if="publicChats.length > 0"
+            class="publicChatItem"
+            @click="viewPublicChat(publicChats[currentPublicChatIndex].id)"
+          >
+            <div class="publicChatTitle">{{ publicChats[currentPublicChatIndex].title }}</div>
+            <div class="publicChatMeta">
+              <span class="like-count">❤️ {{ publicChats[currentPublicChatIndex].like_count || 0 }}</span>
+              <span>·</span>
+              <span>{{ publicChats[currentPublicChatIndex].updatedAt }}</span>
+            </div>
+          </div>
+          <div v-else class="hint">暂无公开对话</div>
+
+          <!-- 轮播指示器 -->
+          <div v-if="publicChats.length > 1" class="carouselDots">
+            <span
+              v-for="(chat, index) in publicChats"
+              :key="chat.id"
+              class="dot"
+              :class="{ active: index === currentPublicChatIndex }"
+            ></span>
+          </div>
+        </div>
+      </div>
+
       <!-- 历史对话 -->
       <div class="section">
         <div class="sectionTitle rowBetween">
@@ -61,13 +95,12 @@
       </div>
       <!-- 左下角：用户信息 -->
       <div class="userBar">
-        <div class="uAvatar">{{ user.short }}</div>
+        <div class="uAvatar" :class="currentUser?.role">{{ user.short }}</div>
         <div class="uMeta">
-          <div class="uName">{{ user.name }}</div>
+          <div class="uName" :class="currentUser?.role">{{ user.name }}</div>
           <div class="uSub">在线</div>
         </div>
-        <button class="admin-btn" @click="goToAdmin" title="管理后台">管</button>
-        <button class="gear" title="设置（占位）">⚙</button>
+        <button class="gear" @click="showSettingsModal = true" title="设置">⚙</button>
       </div>
     </aside>
 
@@ -87,7 +120,7 @@
           </template>
           <!-- 已登录用户显示用户名和登出按钮 -->
           <template v-else>
-            <span class="welcomeText">{{ currentUser.username }}</span>
+            <span class="welcomeText" :class="currentUser.role">{{ currentUser.username }}</span>
             <button class="authBtn ghostBtn" @click="handleLogout">登出</button>
           </template>
           <div class="status">
@@ -260,6 +293,165 @@
         </div>
       </div>
     </div>
+
+    <!-- 设置弹窗 -->
+    <div v-if="showSettingsModal" class="modalOverlay" @click.self="showSettingsModal = false">
+      <div class="modal settingsModal">
+        <div class="modalHeader">
+          <h2>设置</h2>
+          <button class="closeBtn" @click="showSettingsModal = false">×</button>
+        </div>
+        <div class="modalBody settingsBody">
+          <div class="settingsTabs">
+            <button
+              class="tabBtn"
+              :class="{ active: activeSettingsTab === 'general' }"
+              @click="activeSettingsTab = 'general'"
+            >
+              通用设置
+            </button>
+            <button
+              class="tabBtn"
+              :class="{ active: activeSettingsTab === 'account' }"
+              @click="activeSettingsTab = 'account'"
+            >
+              账号管理
+            </button>
+            <button
+              class="tabBtn"
+              :class="{ active: activeSettingsTab === 'data' }"
+              @click="activeSettingsTab = 'data'"
+            >
+              数据管理
+            </button>
+          </div>
+
+          <!-- 通用设置 -->
+          <div v-if="activeSettingsTab === 'general'" class="settingsContent">
+            <h3>主题设置</h3>
+            <div class="themeOptions">
+              <button
+                class="themeOption"
+                :class="{ active: theme === 'dark' }"
+                @click="setTheme('dark')"
+              >
+                <span class="themeIcon">🌙</span>
+                <span>深色模式</span>
+              </button>
+              <button
+                class="themeOption"
+                :class="{ active: theme === 'light' }"
+                @click="setTheme('light')"
+              >
+                <span class="themeIcon">☀️</span>
+                <span>浅色模式</span>
+              </button>
+              <button
+                class="themeOption"
+                :class="{ active: theme === 'system' }"
+                @click="setTheme('system')"
+              >
+                <span class="themeIcon">💻</span>
+                <span>跟随系统</span>
+              </button>
+            </div>
+
+            <div class="settingsSection" v-if="currentUser">
+              <h4>管理员</h4>
+              <button class="adminEntryBtn" @click="goToAdmin">
+                进入管理后台
+              </button>
+            </div>
+          </div>
+
+          <!-- 账号管理 -->
+          <div v-if="activeSettingsTab === 'account'" class="settingsContent">
+            <div v-if="!currentUser" class="notLoggedIn">
+              <p>请先登录以管理账号信息</p>
+              <button class="submitBtn" @click="showSettingsModal = false; showLoginModal = true">立即登录</button>
+            </div>
+            <div v-else>
+              <h3>个人信息</h3>
+              <div class="formGroup">
+                <label>头像URL</label>
+                <input
+                  v-model="profileForm.avatarUrl"
+                  type="text"
+                  placeholder="https://example.com/avatar.png"
+                />
+              </div>
+              <div class="formGroup">
+                <label>用户名</label>
+                <input
+                  v-model="profileForm.username"
+                  type="text"
+                  placeholder="用户名"
+                />
+              </div>
+              <div class="formGroup">
+                <label>邮箱</label>
+                <input
+                  v-model="profileForm.email"
+                  type="email"
+                  placeholder="your@email.com"
+                />
+              </div>
+              <button class="submitBtn" @click="updateProfile">保存个人信息</button>
+
+              <h3 style="margin-top: 24px;">修改密码</h3>
+              <div v-if="profileError" class="formError">{{ profileError }}</div>
+              <div v-if="profileSuccess" class="formSuccess">{{ profileSuccess }}</div>
+              <div class="formGroup">
+                <label>当前密码</label>
+                <input
+                  v-model="passwordForm.oldPassword"
+                  type="password"
+                  placeholder="请输入当前密码"
+                />
+              </div>
+              <div class="formGroup">
+                <label>新密码</label>
+                <input
+                  v-model="passwordForm.newPassword"
+                  type="password"
+                  placeholder="至少6个字符"
+                />
+              </div>
+              <div class="formGroup">
+                <label>确认新密码</label>
+                <input
+                  v-model="passwordForm.confirmPassword"
+                  type="password"
+                  placeholder="再次输入新密码"
+                />
+              </div>
+              <button class="submitBtn" @click="changePassword">修改密码</button>
+            </div>
+          </div>
+
+          <!-- 数据管理 -->
+          <div v-if="activeSettingsTab === 'data'" class="settingsContent">
+            <div v-if="!currentUser" class="notLoggedIn">
+              <p>请先登录以管理数据</p>
+              <button class="submitBtn" @click="showSettingsModal = false; showLoginModal = true">立即登录</button>
+            </div>
+            <div v-else>
+              <h3>导出数据</h3>
+              <p class="settingsHint">导出您的所有对话历史记录为JSON格式</p>
+              <button class="actionBtn exportBtn" @click="exportAllData">
+                <span>📥</span> 导出所有对话
+              </button>
+
+              <h3 style="margin-top: 24px;">删除数据</h3>
+              <p class="settingsHint warning">危险操作：删除后将无法恢复</p>
+              <button class="actionBtn deleteBtn" @click="confirmDeleteAll">
+                <span>🗑️</span> 删除所有对话
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -274,6 +466,34 @@ const emit = defineEmits(['switch-to-admin']);
 const currentUser = ref(null);
 const showLoginModal = ref(false);
 const showRegisterModal = ref(false);
+
+// ========== 设置相关状态 ==========
+const showSettingsModal = ref(false);
+const activeSettingsTab = ref('general'); // general | account | data
+const theme = ref(localStorage.getItem('theme') || 'dark');
+
+// ========== 公开对话大厅 ==========
+const publicChats = ref([]);
+const currentPublicChatIndex = ref(0);
+let carouselTimer = null;
+
+// ========== 个人信息表单 ==========
+const profileForm = ref({
+  avatarUrl: '',
+  username: '',
+  email: '',
+});
+
+// ========== 修改密码表单 ==========
+const passwordForm = ref({
+  oldPassword: '',
+  newPassword: '',
+  confirmPassword: '',
+});
+
+// ========== 个人信息错误/成功消息 ==========
+const profileError = ref('');
+const profileSuccess = ref('');
 
 // 登录表单
 const loginForm = ref({
@@ -360,7 +580,38 @@ onMounted(async () => {
   const localUser = getUser();
   if (localUser) {
     currentUser.value = localUser;
+    // 初始化个人信息表单
+    profileForm.value = {
+      avatarUrl: localUser.avatar_url || '',
+      username: localUser.username || '',
+      email: localUser.email || '',
+    };
   }
+
+  // 初始化主题
+  initTheme();
+
+  // 加载公开对话大厅（添加示例数据）
+  await loadPublicChats();
+  // 添加示例公开对话（用于展示效果）
+  if (publicChats.value.length === 0) {
+    publicChats.value = [
+      {
+        id: 'example-1',
+        title: '示例：如何高效学习人工智能？',
+        like_count: 128,
+        updatedAt: '12/20 10:30'
+      },
+      {
+        id: 'example-2',
+        title: '示例：多智能体协同的优势与挑战',
+        like_count: 96,
+        updatedAt: '12/21 14:22'
+      }
+    ];
+  }
+  // 启动轮播
+  startCarousel();
 
   await loadChats();
   // 加载对话列表后，自动加载第一条对话的消息
@@ -372,6 +623,11 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  // 清除轮播定时器
+  if (carouselTimer) {
+    clearInterval(carouselTimer);
+    carouselTimer = null;
+  }
   // 断开所有WebSocket连接
   apiClient.disconnectAll();
   // 清理WebSocket连接跟踪
@@ -1043,9 +1299,43 @@ function exportCurrent(type) {
   download(`${c.title}.txt`, header + body);
 }
 
+/**
+ * 进入管理后台
+ */
 function goToAdmin() {
-  window.location.hash = 'admin';
+  if (!currentUser.value) {
+    alert('请先登录');
+    showLoginModal.value = true;
+    return;
+  }
+
+  // 检查用户角色
+  const role = currentUser.value.role || 'user';
+  if (role === 'guest' || role === 'user') {
+    alert('您没有权限访问管理后台');
+    return;
+  }
+
+  // 管理员和超级管理员可以进入
   emit('switch-to-admin');
+}
+
+/**
+ * 检查用户是否为管理员或超级管理员
+ */
+function isAdminOrSuperAdmin() {
+  if (!currentUser.value) return false;
+  const role = currentUser.value.role || 'user';
+  return role === 'admin' || role === 'super_admin';
+}
+
+/**
+ * 检查用户是否为超级管理员
+ */
+function isSuperAdmin() {
+  if (!currentUser.value) return false;
+  const role = currentUser.value.role || 'user';
+  return role === 'super_admin';
 }
 
 // ========== 用户认证方法 ==========
@@ -1166,6 +1456,238 @@ function exportCurrentWithAuth(type) {
     return;
   }
   exportCurrent(type);
+}
+
+// ========== 主题相关 ==========
+
+/**
+ * 初始化主题
+ */
+function initTheme() {
+  const savedTheme = localStorage.getItem('theme') || 'dark';
+  setTheme(savedTheme);
+}
+
+/**
+ * 设置主题
+ */
+function setTheme(newTheme) {
+  theme.value = newTheme;
+  localStorage.setItem('theme', newTheme);
+
+  const root = document.documentElement;
+  if (newTheme === 'system') {
+    // 检测系统主题
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    applyTheme(prefersDark ? 'dark' : 'light');
+    // 监听系统主题变化
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', (e) => {
+      applyTheme(e.matches ? 'dark' : 'light');
+    });
+  } else {
+    applyTheme(newTheme);
+  }
+}
+
+/**
+ * 应用主题
+ */
+function applyTheme(themeMode) {
+  const root = document.documentElement;
+  if (themeMode === 'dark') {
+    root.setAttribute('data-theme', 'dark');
+    root.style.setProperty('--bg', '#0b1020');
+    root.style.setProperty('--panel', '#111a33');
+    root.style.setProperty('--panel2', '#0f1730');
+    root.style.setProperty('--text', '#eaf0ff');
+    root.style.setProperty('--muted', '#9fb0d0');
+  } else if (themeMode === 'light') {
+    root.setAttribute('data-theme', 'light');
+    // 浅色模式：白色背景，黑色文字
+    root.style.setProperty('--bg', '#ffffff');
+    root.style.setProperty('--panel', '#f7f7f7');
+    root.style.setProperty('--panel2', '#eeeeee');
+    root.style.setProperty('--text', '#000000');
+    root.style.setProperty('--muted', '#666666');
+  }
+}
+
+// ========== 公开对话相关 ==========
+
+/**
+ * 加载公开对话大厅
+ */
+async function loadPublicChats() {
+  try {
+    const result = await apiClient.getPublicChatHall(20);
+    publicChats.value = result.chats || [];
+  } catch (err) {
+    console.error('加载公开对话失败:', err);
+  }
+}
+
+/**
+ * 刷新公开对话
+ */
+async function refreshPublicChats() {
+  await loadPublicChats();
+  // 重置轮播
+  currentPublicChatIndex.value = 0;
+  restartCarousel();
+}
+
+/**
+ * 启动轮播
+ */
+function startCarousel() {
+  if (carouselTimer) {
+    clearInterval(carouselTimer);
+  }
+  carouselTimer = setInterval(() => {
+    if (publicChats.value.length > 1) {
+      currentPublicChatIndex.value = (currentPublicChatIndex.value + 1) % publicChats.value.length;
+    }
+  }, 5000);
+}
+
+/**
+ * 重启轮播
+ */
+function restartCarousel() {
+  startCarousel();
+}
+
+/**
+ * 查看公开对话
+ */
+async function viewPublicChat(chatId) {
+  // 切换到该对话
+  activeChatId.value = chatId;
+  await loadChatMessages(chatId);
+  scrollToBottom(false);
+}
+
+// ========== 账号管理相关 ==========
+
+/**
+ * 更新个人信息
+ */
+async function updateProfile() {
+  profileError.value = '';
+  profileSuccess.value = '';
+
+  if (!profileForm.value.username || profileForm.value.username.length < 3) {
+    profileError.value = '用户名至少3个字符';
+    return;
+  }
+
+  if (profileForm.value.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(profileForm.value.email)) {
+    profileError.value = '邮箱格式不正确';
+    return;
+  }
+
+  try {
+    const result = await apiClient.updateProfile({
+      username: profileForm.value.username,
+      email: profileForm.value.email || null,
+      avatar_url: profileForm.value.avatarUrl || null,
+    });
+    currentUser.value = result.user;
+    profileSuccess.value = '个人信息已更新';
+    setTimeout(() => {
+      profileSuccess.value = '';
+    }, 3000);
+  } catch (err) {
+    profileError.value = err.message || '更新失败';
+  }
+}
+
+/**
+ * 修改密码
+ */
+async function changePassword() {
+  profileError.value = '';
+  profileSuccess.value = '';
+
+  if (!passwordForm.value.oldPassword) {
+    profileError.value = '请输入当前密码';
+    return;
+  }
+
+  if (!passwordForm.value.newPassword || passwordForm.value.newPassword.length < 6) {
+    profileError.value = '新密码至少6个字符';
+    return;
+  }
+
+  if (passwordForm.value.newPassword !== passwordForm.value.confirmPassword) {
+    profileError.value = '两次密码不一致';
+    return;
+  }
+
+  try {
+    await apiClient.changePassword(passwordForm.value.oldPassword, passwordForm.value.newPassword);
+    profileSuccess.value = '密码已修改';
+    passwordForm.value = {
+      oldPassword: '',
+      newPassword: '',
+      confirmPassword: '',
+    };
+    setTimeout(() => {
+      profileSuccess.value = '';
+    }, 3000);
+  } catch (err) {
+    profileError.value = err.message || '修改密码失败';
+  }
+}
+
+// ========== 数据管理相关 ==========
+
+/**
+ * 导出所有数据
+ */
+async function exportAllData() {
+  try {
+    const result = await apiClient.exportAllChats();
+    const exportedAt = new Date().toISOString();
+    const payload = {
+      exportedAt,
+      chats: result.chats,
+    };
+    download(`all_chats_${new Date().toISOString().split('T')[0]}.json`, JSON.stringify(payload, null, 2));
+    alert('导出成功');
+  } catch (err) {
+    console.error('导出失败:', err);
+    alert('导出失败: ' + err.message);
+  }
+}
+
+/**
+ * 确认删除所有对话
+ */
+async function confirmDeleteAll() {
+  if (!confirm('⚠️ 确定要删除所有对话吗？此操作不可恢复！')) {
+    return;
+  }
+
+  if (!confirm('⚠️ 请再次确认：真的要删除所有对话吗？')) {
+    return;
+  }
+
+  try {
+    await apiClient.deleteAllChats();
+    alert('所有对话已删除');
+    // 重新加载对话列表
+    await loadChats();
+    if (chats.value.length > 0) {
+      activeChatId.value = chats.value[0].id;
+      await loadChatMessages(activeChatId.value);
+    } else {
+      activeChatId.value = null;
+    }
+  } catch (err) {
+    console.error('删除失败:', err);
+    alert('删除失败: ' + err.message);
+  }
 }
 
 </script>
@@ -1436,8 +1958,29 @@ function exportCurrentWithAuth(type) {
   border:1px solid rgba(255,255,255,.18);
   background: rgba(255,255,255,.06);
 }
+
+/* 管理员和超级管理员头像框颜色 */
+.uAvatar.admin {
+  border-color: rgba(199,125,255,.4);
+  background: rgba(199,125,255,.2);
+  color: #c77dff;
+}
+
+.uAvatar.super_admin {
+  border-color: rgba(255,199,89,.4);
+  background: rgba(255,199,89,.2);
+  color: #ffc757;
+}
+
 .uMeta{ min-width:0; }
 .uName{ font-weight:900; }
+/* 管理员和超级管理员用户名颜色 */
+.uName.admin {
+  color: #c77dff;
+}
+.uName.super_admin {
+  color: #ffc757;
+}
 .uSub{ font-size:12px; color:var(--muted); margin-top:2px; }
 .admin-btn{
   margin-left:auto;
@@ -1453,7 +1996,7 @@ function exportCurrentWithAuth(type) {
   border-color: rgba(199,125,255,.40);
 }
 .gear{
-  margin-left:8px;
+  margin-left:150px;
   width:34px;height:34px;border-radius:12px;
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.04);
@@ -1762,6 +2305,14 @@ function exportCurrentWithAuth(type) {
   color: var(--text);
 }
 
+/* 管理员和超级管理员欢迎文字颜色 */
+.welcomeText.admin {
+  color: #c77dff;
+}
+.welcomeText.super_admin {
+  color: #ffc757;
+}
+
 /* ========== 登录/注册弹窗样式 ========== */
 .modalOverlay {
   position: fixed;
@@ -1932,5 +2483,579 @@ function exportCurrentWithAuth(type) {
 
 .formFooter a:hover {
   text-decoration: underline;
+}
+
+/* ========== 已公开对话轮播图样式 ========== */
+.carouselSection {
+  flex: 0 0 auto;
+  max-height: 180px;
+}
+
+.publicChatCarousel {
+  padding: 0 4px;
+  position: relative;
+}
+
+.publicChatItem {
+  text-align: left;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(106,167,255,.20);
+  background: rgba(106,167,255,.08);
+  cursor: pointer;
+  transition: all .3s ease;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.publicChatItem:hover {
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.35);
+}
+
+.publicChatTitle {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.publicChatMeta {
+  font-size: 12px;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.like-count {
+  color: #ff6b6b;
+  font-weight: 700;
+}
+
+/* 轮播指示器 */
+.carouselDots {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.carouselDots .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255,255,255,.20);
+  transition: all .3s ease;
+}
+
+.carouselDots .dot.active {
+  width: 18px;
+  border-radius: 3px;
+  background: var(--primary);
+}
+
+/* ========== 设置弹窗样式 ========== */
+.settingsModal {
+  max-width: 640px;
+}
+
+.settingsBody {
+  padding: 0;
+}
+
+.settingsTabs {
+  display: flex;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+  padding: 0 20px;
+}
+
+.tabBtn {
+  padding: 16px 20px;
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: all .18s ease;
+}
+
+.tabBtn:hover {
+  color: var(--text);
+}
+
+.tabBtn.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.settingsContent {
+  padding: 24px;
+}
+
+.settingsContent h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.settingsContent h4 {
+  margin: 24px 0 12px 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* 主题选项 */
+.themeOptions {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.themeOption {
+  flex: 1;
+  padding: 16px;
+  border-radius: 14px;
+  border: 2px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  color: var(--text);
+  cursor: pointer;
+  transition: all .18s ease;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.themeOption:hover {
+  border-color: rgba(255,255,255,.20);
+  background: rgba(255,255,255,.05);
+}
+
+.themeOption.active {
+  border-color: var(--primary);
+  background: rgba(106,167,255,.12);
+}
+
+.themeIcon {
+  font-size: 24px;
+}
+
+.themeOption span:last-child {
+  font-weight: 700;
+  font-size: 13px;
+}
+
+/* 管理员入口按钮 */
+.adminEntryBtn {
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(199,125,255,.25);
+  background: rgba(199,125,255,.18);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  width: 100%;
+}
+
+.adminEntryBtn:hover {
+  filter: brightness(1.05);
+  border-color: rgba(199,125,255,.40);
+}
+
+/* 设置提示 */
+.settingsHint {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 8px 0 12px 0;
+  line-height: 1.5;
+}
+
+.settingsHint.warning {
+  color: #ff8888;
+}
+
+/* 未登录状态 */
+.notLoggedIn {
+  text-align: center;
+  padding: 40px 20px;
+}
+
+.notLoggedIn p {
+  color: var(--muted);
+  margin-bottom: 16px;
+}
+
+/* 数据管理操作按钮 */
+.actionBtn {
+  width: 100%;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid;
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all .18s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.exportBtn {
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.35);
+  color: var(--text);
+}
+
+.exportBtn:hover {
+  background: rgba(106,167,255,.25);
+  border-color: rgba(106,167,255,.50);
+}
+
+.deleteBtn {
+  background: rgba(255,102,102,.15);
+  border-color: rgba(255,102,102,.35);
+  color: #ff8888;
+}
+
+.deleteBtn:hover {
+  background: rgba(255,102,102,.25);
+  border-color: rgba(255,102,102,.50);
+}
+
+/* 成功消息样式 */
+.formSuccess {
+  padding: 12px;
+  border-radius: 10px;
+  background: rgba(81,209,138,.15);
+  border: 1px solid rgba(81,209,138,.35);
+  color: #51d18a;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+/* ========== 浅色模式样式 ========== */
+:root[data-theme="light"] body {
+  background: #ffffff !important;
+}
+
+:root[data-theme="light"] .sidebar {
+  background: #f7f7f7;
+  border-right-color: #e0e0e0;
+}
+
+/* 浅色模式下的按钮 - 有色彩的版本 */
+:root[data-theme="light"] .ghost {
+  background: #f0f4ff;
+  border-color: #6aa7ff;
+  color: #1976d2;
+}
+
+:root[data-theme="light"] .ghost:hover {
+  background: #e3f2fd;
+  border-color: #42a5f5;
+}
+
+:root[data-theme="light"] .topic {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+:root[data-theme="light"] .topic:hover {
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  filter: brightness(1.1);
+}
+
+:root[data-theme="light"] .topic2 {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border-color: #e91e63;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
+}
+
+:root[data-theme="light"] .topic2:hover {
+  box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
+  filter: brightness(1.1);
+}
+
+:root[data-theme="light"] .chatItem {
+  background: #ffffff;
+  border-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .chatItem:hover {
+  background: #f5f5f5;
+  border-color: #bdbdbd;
+}
+
+:root[data-theme="light"] .chatItem.active {
+  border-color: #6aa7ff;
+  background: linear-gradient(135deg, #e3f2fd 0%, #f0f4ff 100%);
+  box-shadow: 0 2px 8px rgba(106, 167, 255, 0.2);
+}
+
+:root[data-theme="light"] .userBar {
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  border-color: #b0bccc;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .uAvatar {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+}
+
+:root[data-theme="light"] .main {
+  background: #ffffff;
+}
+
+:root[data-theme="light"] .topbar {
+  background: linear-gradient(180deg, #ffffff 0%, #f8f9fa 100%);
+  border-bottom-color: #e0e0e0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .composer {
+  background: linear-gradient(180deg, #f8f9fa 0%, #ffffff 100%);
+  border-top-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .input {
+  background: #ffffff;
+  border-color: #bdbdbd;
+  color: #000000;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .input:focus {
+  border-color: #6aa7ff;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(106, 167, 255, 0.1), 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+/* 浅色模式下的发送按钮 */
+:root[data-theme="light"] .sendArrowBtn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+:root[data-theme="light"] .sendArrowBtn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的总结按钮 */
+:root[data-theme="light"] .summary-btn {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border-color: #e91e63;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
+}
+
+:root[data-theme="light"] .summary-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
+  box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的气泡 */
+:root[data-theme="light"] .bubble {
+  background: #ffffff;
+  border-color: #e0e0e0;
+  color: #000000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-theme="light"] .bubble .content p {
+  color: #000000;
+}
+
+/* 浅色模式下的公开对话 */
+:root[data-theme="light"] .publicChatItem {
+  background: linear-gradient(135deg, #e3f2fd 0%, #f0f4ff 100%);
+  border-color: #6aa7ff;
+  box-shadow: 0 2px 8px rgba(106, 167, 255, 0.15);
+}
+
+:root[data-theme="light"] .publicChatItem:hover {
+  background: linear-gradient(135deg, #f0f4ff 0%, #e3f2fd 100%);
+  box-shadow: 0 4px 12px rgba(106, 167, 255, 0.25);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的登录/注册按钮 */
+:root[data-theme="light"] .authBtn.ghostBtn {
+  background: #f0f4ff;
+  border-color: #6aa7ff;
+  color: #1976d2;
+}
+
+:root[data-theme="light"] .authBtn.ghostBtn:hover {
+  background: #e3f2fd;
+  border-color: #42a5f5;
+}
+
+:root[data-theme="light"] .authBtn.primaryBtn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+:root[data-theme="light"] .authBtn.primaryBtn:hover {
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的提交按钮 */
+:root[data-theme="light"] .submitBtn {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+:root[data-theme="light"] .submitBtn:hover {
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的设置按钮 */
+:root[data-theme="light"] .gear {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-color: #5a67d8;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+}
+
+:root[data-theme="light"] .gear:hover {
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的滚动条 */
+:root[data-theme="light"] .chatList::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,0);
+}
+
+:root[data-theme="light"] .chatList:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(106, 167, 255, 0.3);
+}
+
+/* 浅色模式下的模态框 */
+:root[data-theme="light"] .modal {
+  background: #ffffff;
+  border-color: #e0e0e0;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+:root[data-theme="light"] .modalOverlay {
+  background: rgba(0,0,0,.6);
+}
+
+/* 浅色模式下的表单输入 */
+:root[data-theme="light"] .formGroup input {
+  background: #ffffff;
+  border-color: #bdbdbd;
+  color: #000000;
+}
+
+:root[data-theme="light"] .formGroup input:focus {
+  border-color: #6aa7ff;
+  background: #ffffff;
+  box-shadow: 0 0 0 3px rgba(106, 167, 255, 0.1);
+}
+
+/* 浅色模式下的主题选项按钮 */
+:root[data-theme="light"] .themeOption {
+  background: #ffffff;
+  border-color: #e0e0e0;
+  color: #000000;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.08);
+}
+
+:root[data-theme="light"] .themeOption:hover {
+  background: #f5f5f5;
+  border-color: #bdbdbd;
+}
+
+:root[data-theme="light"] .themeOption.active {
+  border-color: #6aa7ff;
+  background: linear-gradient(135deg, #e3f2fd 0%, #f0f4ff 100%);
+  box-shadow: 0 4px 12px rgba(106, 167, 255, 0.3);
+}
+
+/* 浅色模式下的管理员入口按钮 */
+:root[data-theme="light"] .adminEntryBtn {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+  border-color: #e91e63;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
+}
+
+:root[data-theme="light"] .adminEntryBtn:hover {
+  box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的数据管理按钮 */
+:root[data-theme="light"] .exportBtn {
+  background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
+  border-color: #4caf50;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}
+
+:root[data-theme="light"] .exportBtn:hover {
+  box-shadow: 0 4px 12px rgba(76, 175, 80, 0.4);
+  transform: translateY(-1px);
+}
+
+:root[data-theme="light"] .deleteBtn {
+  background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+  border-color: #e53935;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(229, 57, 53, 0.3);
+}
+
+:root[data-theme="light"] .deleteBtn:hover {
+  box-shadow: 0 4px 12px rgba(229, 57, 53, 0.4);
+  transform: translateY(-1px);
+}
+
+/* 浅色模式下的关闭按钮 */
+:root[data-theme="light"] .closeBtn {
+  background: #f5f5f5;
+  border-color: #e0e0e0;
+  color: #666666;
+}
+
+:root[data-theme="light"] .closeBtn:hover {
+  background: #e0e0e0;
+  border-color: #bdbdbd;
+  color: #000000;
 }
 </style>
