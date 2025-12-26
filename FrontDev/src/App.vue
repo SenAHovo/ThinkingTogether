@@ -8,6 +8,7 @@
           <div class="name">智炬五维</div>
           <div class="sub">多智能体协同学习 · 前端 Demo</div>
         </div>
+        <button class="newChatBtn" @click="goToHomePage" title="开启新对话">+</button>
       </div>
 
       <!-- 已公开历史对话轮播图 -->
@@ -46,21 +47,15 @@
 
       <!-- 历史对话 -->
       <div class="section">
-        <div class="sectionTitle rowBetween">
-  <span>历史对话</span>
-  <button class="ghost" @click="newChat">+ 新建</button>
-</div>
+        <div class="sectionTitle">
+          <span>历史对话</span>
+        </div>
 
 <input
   class="search"
   v-model="keyword"
   placeholder="搜索会话…"
 />
-
-        <div class="exportRow">
-          <button class="topic" @click="exportCurrentWithAuth('json')">导出 JSON</button>
-          <button class="topic topic2" @click="exportCurrentWithAuth('txt')">导出 TXT</button>
-        </div>
 
         <div class="chatList">
   <div
@@ -70,7 +65,18 @@
     :class="{ active: c.id === activeChatId }"
   >
     <div class="chatMain" @click="switchChat(c.id)">
-      <div class="chatTitle">{{ c.title }}</div>
+      <!-- 重命名输入框 -->
+      <input
+        v-if="c.isEditing"
+        class="chatTitleInput"
+        v-model="c.editingTitle"
+        @blur="finishRename(c)"
+        @keyup.enter="finishRename(c)"
+        @keyup.esc="cancelRename(c)"
+        ref="renameInput"
+        @click.stop
+      />
+      <div v-else class="chatTitle">{{ c.title }}</div>
       <div class="chatMeta">
         <span>{{ c.updatedAt }}</span>
         <span>·</span>
@@ -78,13 +84,27 @@
       </div>
     </div>
 
- <button
-  class="pinText"
-  :class="{ on: c.pinned }"
-  @click.stop="c.pinned = !c.pinned"
->
-  {{ c.pinned ? '取消置顶' : '置顶' }}
-</button>
+    <!-- 三点菜单按钮 -->
+    <div class="chatActions" @click.stop>
+      <button
+        class="moreBtn"
+        :class="{ active: showMenuFor === c.id }"
+        @click="toggleMenu(c.id)"
+      >
+        ⋯
+      </button>
+      <div v-if="showMenuFor === c.id" class="menuDropdown" @click.stop>
+        <button class="menuItem" @click="startRename(c)">
+          <span class="menuIcon">✏️</span> 重命名
+        </button>
+        <button class="menuItem" @click="exportSingleChat(c)">
+          <span class="menuIcon">📥</span> 导出 TXT
+        </button>
+        <button class="menuItem delete" @click="confirmDeleteSingle(c)">
+          <span class="menuIcon">🗑️</span> 删除
+        </button>
+      </div>
+    </div>
 
   </div>
 </div>
@@ -95,7 +115,10 @@
       </div>
       <!-- 左下角：用户信息 -->
       <div class="userBar">
-        <div class="uAvatar" :class="currentUser?.role">{{ user.short }}</div>
+        <div class="uAvatar" :class="currentUser?.role" @click="handleAvatarClick">
+          <img v-if="currentUser?.avatar_url" :src="currentUser.avatar_url" alt="用户头像" class="userAvatarImage" />
+          <span v-else>{{ user.short }}</span>
+        </div>
         <div class="uMeta">
           <div class="uName" :class="currentUser?.role">{{ user.name }}</div>
           <div class="uSub">在线</div>
@@ -105,93 +128,147 @@
     </aside>
 
     <!-- 右侧：聊天区 -->
-    <main class="main">
-      <header class="topbar">
-        <div class="topicTitle">
-          <div class="big">{{ activeChat.title }}</div>
-          <div class="small">可切换历史对话 · 可导出当前会话</div>
-        </div>
-
-        <div class="topbarRight">
-          <!-- 未登录用户显示登录注册按钮 -->
-          <template v-if="!currentUser">
-            <button class="authBtn ghostBtn" @click="showRegisterModal = true">注册</button>
-            <button class="authBtn primaryBtn" @click="showLoginModal = true">登录</button>
-          </template>
-          <!-- 已登录用户显示用户名和登出按钮 -->
-          <template v-else>
-            <span class="welcomeText" :class="currentUser.role">{{ currentUser.username }}</span>
-            <button class="authBtn ghostBtn" @click="handleLogout">登出</button>
-          </template>
-          <div class="status">
-            <span class="dot"></span>
-            <span>已连接</span>
+    <main class="main" :class="{ 'home-mode': isHomePage }">
+      <!-- 主页介绍界面 -->
+      <div v-if="isHomePage" class="homePage">
+        <div class="homeContent">
+          <div class="homeLogo">
+            <div class="logoLarge">智炬</div>
+            <div class="logoText">智炬五维 - 多智能体协同学习平台</div>
           </div>
-        </div>
-      </header>
 
-      <section class="chat" ref="chatContainer">
-        <div class="timeline" ref="timelineRef">
-          <div class="msg" v-for="msg in activeChat.messages" :key="msg.id" :class="{me: msg.authorId==='user'}">
-            <div class="bubble" :style="bubbleStyle(msg.authorId)" :class="{loading: msg.isLoading}">
-              <template v-if="msg.authorId !== 'user'">
-                <div class="head">
-                  <span class="who">{{ msg.author_name || nameOf(msg.authorId) }}</span>
-                  <span class="badge" v-if="roleOf(msg.authorId)">{{ roleOf(msg.authorId) }}</span>
-                  <span class="time">{{ msg.time }}</span>
-                </div>
-              </template>
-              <div class="content">
-                <!-- Loading状态显示 -->
-                <div v-if="msg.isLoading" class="loading-indicator">
-                  <span class="dot-bounce"></span>
-                  <span class="dot-bounce"></span>
-                  <span class="dot-bounce"></span>
-                </div>
-                <p v-else v-for="(p, i) in (msg.text || msg.content || '').split('\n')" :key="i">{{ p }}</p>
+          <div class="homeIntro">
+            <h2>欢迎来到智炬五维</h2>
+            <p>这是一个多智能体协同学习的前端演示系统</p>
+            <ul class="featureList">
+              <li>🤖 多个AI智能体协同工作，为您提供多视角的讨论</li>
+              <li>💬 实时对话，智能体会根据话题发表独特见解</li>
+              <li>📚 支持历史对话管理和导出，方便回顾学习内容</li>
+              <li>🎨 优雅的界面设计，流畅的交互体验</li>
+            </ul>
+          </div>
+
+          <div class="homeInput">
+            <div class="inputRow homeInputRow">
+              <div class="inputWrapper">
+                <textarea
+                  ref="homeInputRef"
+                  v-model="homeDraft"
+                  class="input homeInput"
+                  rows="3"
+                  placeholder="输入您想要讨论的话题，开启一段新的对话..."
+                  @keydown.enter.exact.prevent="handleHomeSend()"
+                  @input="autoResizeTextarea(homeInputRef, 3, 10)"
+                  :disabled="isCreating"
+                />
+                <button
+                  class="sendArrowBtn"
+                  :disabled="isCreating || !homeDraft.trim()"
+                  @click="handleHomeSend()"
+                  title="开始对话"
+                >
+                  ↑
+                </button>
               </div>
+            </div>
+            <div class="tips">
+              <span>Enter 发送</span><span>·</span>
+              <span>输入话题后即可开启多智能体协同讨论</span>
             </div>
           </div>
         </div>
-      </section>
+      </div>
 
-      <footer class="composer">
-        <div class="quote" v-if="quoted">
-          <span class="qtag">引用</span>
-          <span class="qtext">{{ quoted }}</span>
-          <button class="qclose" @click="quoted=null">×</button>
-        </div>
+      <!-- 对话界面 -->
+      <div v-else class="chatContainer">
+        <header class="topbar">
+          <div class="topicTitle">
+            <div class="big">{{ activeChat.title }}</div>
+            <div class="small">可切换历史对话 · 可导出当前会话</div>
+          </div>
 
-        <div class="inputRow">
-          <div class="inputWrapper">
-            <textarea
-              ref="inputRef"
-              v-model="draft"
-              class="input"
-              rows="2"
-              :placeholder="inputPlaceholder"
-              @keydown.enter.exact.prevent="handleSendOrContinue()"
-              :disabled="isSending || isCreating"
-            />
-            <button
-              class="sendArrowBtn"
-              :disabled="isSending || isCreating"
-              @click="handleSendOrContinue()"
-              :title="draft.trim() ? '发送消息' : '继续讨论'"
-            >
-              ↑
+          <div class="topbarRight">
+            <!-- 未登录用户显示登录注册按钮 -->
+            <template v-if="!currentUser">
+              <button class="authBtn ghostBtn" @click="showRegisterModal = true">注册</button>
+              <button class="authBtn primaryBtn" @click="showLoginModal = true">登录</button>
+            </template>
+            <!-- 已登录用户显示用户名和登出按钮 -->
+            <template v-else>
+              <span class="welcomeText" :class="currentUser.role">{{ currentUser.username }}</span>
+              <button class="authBtn ghostBtn" @click="handleLogout">登出</button>
+            </template>
+            <div class="status">
+              <span class="dot"></span>
+              <span>已连接</span>
+            </div>
+          </div>
+        </header>
+
+        <section class="chat" ref="chatContainer">
+          <div class="timeline" ref="timelineRef">
+            <div class="msg" v-for="msg in activeChat.messages" :key="msg.id" :class="{me: msg.authorId==='user'}">
+              <div class="bubble" :style="bubbleStyle(msg.authorId)" :class="{loading: msg.isLoading}">
+                <template v-if="msg.authorId !== 'user'">
+                  <div class="head">
+                    <span class="who">{{ msg.author_name || nameOf(msg.authorId) }}</span>
+                    <span class="badge" v-if="roleOf(msg.authorId)">{{ roleOf(msg.authorId) }}</span>
+                    <span class="time">{{ msg.time }}</span>
+                  </div>
+                </template>
+                <div class="content">
+                  <!-- Loading状态显示 -->
+                  <div v-if="msg.isLoading" class="loading-indicator">
+                    <span class="dot-bounce"></span>
+                    <span class="dot-bounce"></span>
+                    <span class="dot-bounce"></span>
+                  </div>
+                  <p v-else v-for="(p, i) in (msg.text || msg.content || '').split('\n')" :key="i">{{ p }}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <footer class="composer">
+          <div class="quote" v-if="quoted">
+            <span class="qtag">引用</span>
+            <span class="qtext">{{ quoted }}</span>
+            <button class="qclose" @click="quoted=null">×</button>
+          </div>
+
+          <div class="inputRow">
+            <div class="inputWrapper">
+              <textarea
+                ref="inputRef"
+                v-model="draft"
+                class="input"
+                rows="2"
+                :placeholder="inputPlaceholder"
+                @keydown.enter.exact.prevent="handleSendOrContinue()"
+                @input="autoResizeTextarea(inputRef, 2, 1000)"
+                :disabled="isSending || isCreating"
+              />
+              <button
+                class="sendArrowBtn"
+                :disabled="isSending || isCreating"
+                @click="handleSendOrContinue()"
+                :title="draft.trim() ? '发送消息' : '继续讨论'"
+              >
+                ↑
+              </button>
+            </div>
+            <button class="summary-btn" :disabled="isSending || isCreating" @click="summarize" title="生成当前对话总结">
+              总结
             </button>
           </div>
-          <button class="summary-btn" :disabled="isSending || isCreating" @click="summarize" title="生成当前对话总结">
-            总结
-          </button>
-        </div>
 
-        <div class="tips">
-          <span>Enter 发送</span><span>·</span>
-          <span>左侧切换历史会话；可导出 JSON/TXT</span>
-        </div>
-      </footer>
+          <div class="tips">
+            <span>Enter 发送</span><span>·</span>
+            <span>左侧切换历史会话；可导出 JSON/TXT</span>
+          </div>
+        </footer>
+      </div>
     </main>
 
     <!-- 登录弹窗 -->
@@ -239,14 +316,23 @@
         </div>
         <div class="modalBody">
           <div v-if="formError" class="formError">{{ formError }}</div>
-          <div class="formGroup">
-            <label>头像URL（可选）</label>
+
+          <!-- 头像上传 -->
+          <div class="avatarUploadContainer">
+            <div class="avatarPreview" @click="triggerRegisterAvatarInput">
+              <img v-if="registerForm.avatarPreview" :src="registerForm.avatarPreview" alt="头像预览" />
+              <span v-else class="avatarPlaceholder">+</span>
+            </div>
+            <div class="avatarUploadHint">点击上传头像</div>
             <input
-              v-model="registerForm.avatarUrl"
-              type="text"
-              placeholder="https://example.com/avatar.png"
+              ref="registerAvatarInputRef"
+              type="file"
+              accept="image/*"
+              style="display: none"
+              @change="handleRegisterAvatarChange"
             />
           </div>
+
           <div class="formGroup">
             <label>用户名 <span class="required">*</span></label>
             <input
@@ -295,7 +381,7 @@
     </div>
 
     <!-- 设置弹窗 -->
-    <div v-if="showSettingsModal" class="modalOverlay" @click.self="showSettingsModal = false">
+    <div v-if="showSettingsModal" class="modalOverlay">
       <div class="modal settingsModal">
         <div class="modalHeader">
           <h2>设置</h2>
@@ -370,62 +456,77 @@
               <p>请先登录以管理账号信息</p>
               <button class="submitBtn" @click="showSettingsModal = false; showLoginModal = true">立即登录</button>
             </div>
-            <div v-else>
-              <h3>个人信息</h3>
-              <div class="formGroup">
-                <label>头像URL</label>
-                <input
-                  v-model="profileForm.avatarUrl"
-                  type="text"
-                  placeholder="https://example.com/avatar.png"
-                />
-              </div>
-              <div class="formGroup">
-                <label>用户名</label>
-                <input
-                  v-model="profileForm.username"
-                  type="text"
-                  placeholder="用户名"
-                />
-              </div>
-              <div class="formGroup">
-                <label>邮箱</label>
-                <input
-                  v-model="profileForm.email"
-                  type="email"
-                  placeholder="your@email.com"
-                />
-              </div>
-              <button class="submitBtn" @click="updateProfile">保存个人信息</button>
+            <div v-else class="accountManagementContainer">
+              <!-- 左侧：个人信息 -->
+              <div class="accountLeftPanel">
+                <h3>个人信息</h3>
 
-              <h3 style="margin-top: 24px;">修改密码</h3>
-              <div v-if="profileError" class="formError">{{ profileError }}</div>
-              <div v-if="profileSuccess" class="formSuccess">{{ profileSuccess }}</div>
-              <div class="formGroup">
-                <label>当前密码</label>
-                <input
-                  v-model="passwordForm.oldPassword"
-                  type="password"
-                  placeholder="请输入当前密码"
-                />
+                <!-- 头像上传 -->
+                <div class="profileAvatarContainer">
+                  <div class="profileAvatarPreview" @click="triggerProfileAvatarInput">
+                    <img v-if="profileForm.avatarPreview || profileForm.avatarUrl" :src="profileForm.avatarPreview || profileForm.avatarUrl" alt="头像预览" />
+                    <span v-else class="avatarPlaceholder">+</span>
+                  </div>
+                  <button class="changeAvatarBtn" @click="triggerProfileAvatarInput">修改头像</button>
+                  <input
+                    ref="profileAvatarInputRef"
+                    type="file"
+                    accept="image/*"
+                    style="display: none"
+                    @change="handleProfileAvatarChange"
+                  />
+                </div>
+
+                <div class="formGroup">
+                  <label>用户名</label>
+                  <input
+                    v-model="profileForm.username"
+                    type="text"
+                    placeholder="用户名"
+                  />
+                </div>
+                <div class="formGroup">
+                  <label>邮箱</label>
+                  <input
+                    v-model="profileForm.email"
+                    type="email"
+                    placeholder="your@email.com"
+                  />
+                </div>
+                <button class="submitBtn" @click="updateProfile">保存个人信息</button>
               </div>
-              <div class="formGroup">
-                <label>新密码</label>
-                <input
-                  v-model="passwordForm.newPassword"
-                  type="password"
-                  placeholder="至少6个字符"
-                />
+
+              <!-- 右侧：修改密码 -->
+              <div class="accountRightPanel">
+                <h3>修改密码</h3>
+                <div v-if="profileError" class="formError">{{ profileError }}</div>
+                <div v-if="profileSuccess" class="formSuccess">{{ profileSuccess }}</div>
+                <div class="formGroup">
+                  <label>当前密码</label>
+                  <input
+                    v-model="passwordForm.oldPassword"
+                    type="password"
+                    placeholder="请输入当前密码"
+                  />
+                </div>
+                <div class="formGroup">
+                  <label>新密码</label>
+                  <input
+                    v-model="passwordForm.newPassword"
+                    type="password"
+                    placeholder="至少6个字符"
+                  />
+                </div>
+                <div class="formGroup">
+                  <label>确认新密码</label>
+                  <input
+                    v-model="passwordForm.confirmPassword"
+                    type="password"
+                    placeholder="再次输入新密码"
+                  />
+                </div>
+                <button class="submitBtn" @click="changePassword">修改密码</button>
               </div>
-              <div class="formGroup">
-                <label>确认新密码</label>
-                <input
-                  v-model="passwordForm.confirmPassword"
-                  type="password"
-                  placeholder="再次输入新密码"
-                />
-              </div>
-              <button class="submitBtn" @click="changePassword">修改密码</button>
             </div>
           </div>
 
@@ -472,6 +573,10 @@ const showSettingsModal = ref(false);
 const activeSettingsTab = ref('general'); // general | account | data
 const theme = ref(localStorage.getItem('theme') || 'dark');
 
+// ========== 主页状态 ==========
+const homeDraft = ref('');
+const homeInputRef = ref(null);
+
 // ========== 公开对话大厅 ==========
 const publicChats = ref([]);
 const currentPublicChatIndex = ref(0);
@@ -480,9 +585,14 @@ let carouselTimer = null;
 // ========== 个人信息表单 ==========
 const profileForm = ref({
   avatarUrl: '',
+  avatarPreview: '',
   username: '',
   email: '',
 });
+
+// 头像上传 input refs
+const registerAvatarInputRef = ref(null);
+const profileAvatarInputRef = ref(null);
 
 // ========== 修改密码表单 ==========
 const passwordForm = ref({
@@ -508,6 +618,7 @@ const registerForm = ref({
   confirmPassword: '',
   email: '',
   avatarUrl: '', // 可选，使用默认头像
+  avatarPreview: '', // 头像预览
 });
 
 // 表单错误
@@ -527,6 +638,8 @@ const user = computed(() => {
 });
 
 const keyword = ref("");
+const showMenuFor = ref(null); // 当前显示菜单的对话ID
+const renameInput = ref(null); // 重命名输入框的引用
 const members = [
   { id: "theorist", name: "理论家", short: "理", role: "体系化", color: "#6aa7ff", desc: "梳理知识框架，把概念讲清楚、讲完整。" },
   { id: "practitioner", name: "实践者", short: "实", role: "应用派", color: "#51d18a", desc: "用例子/代码/练习把知识落地。" },
@@ -574,6 +687,54 @@ function focusInput() {
   }
 }
 
+/**
+ * 自动调整textarea高度
+ * @param {HTMLTextAreaElement} textarea - 目标textarea元素
+ * @param {number} minRows - 最小行数
+ * @param {number} maxRows - 最大行数
+ */
+function autoResizeTextarea(textarea, minRows = 2, maxRows = 12) {
+  if (!textarea) return;
+
+  // 保存当前滚动位置
+  const scrollTop = textarea.scrollTop;
+
+  // 重置高度以获取正确的scrollHeight
+  textarea.style.height = 'auto';
+
+  // 计算行高（包含padding）
+  const computedStyle = window.getComputedStyle(textarea);
+  const lineHeight = parseFloat(computedStyle.lineHeight);
+  const paddingTop = parseFloat(computedStyle.paddingTop);
+  const paddingBottom = parseFloat(computedStyle.paddingBottom);
+
+  // 计算每行的实际高度
+  const rowHeight = lineHeight;
+
+  // 计算最小和最大高度
+  const minHeight = rowHeight * minRows;
+  const maxHeight = rowHeight * maxRows;
+
+  // 获取实际内容高度
+  const scrollHeight = textarea.scrollHeight;
+
+  // 计算新高度（在最小和最大值之间）
+  let newHeight = scrollHeight;
+  if (newHeight < minHeight) {
+    newHeight = minHeight;
+  } else if (newHeight > maxHeight) {
+    newHeight = maxHeight;
+  }
+
+  // 设置新高度
+  textarea.style.height = newHeight + 'px';
+
+  // 如果内容超过了最大高度，确保滚动条在底部
+  if (scrollHeight > maxHeight && scrollTop > 0) {
+    textarea.scrollTop = scrollTop;
+  }
+}
+
 // ========== 初始化加载 ==========
 onMounted(async () => {
   // 初始化用户状态
@@ -583,6 +744,7 @@ onMounted(async () => {
     // 初始化个人信息表单
     profileForm.value = {
       avatarUrl: localUser.avatar_url || '',
+      avatarPreview: localUser.avatar_url || '',
       username: localUser.username || '',
       email: localUser.email || '',
     };
@@ -614,12 +776,7 @@ onMounted(async () => {
   startCarousel();
 
   await loadChats();
-  // 加载对话列表后，自动加载第一条对话的消息
-  if (chats.value.length > 0) {
-    activeChatId.value = chats.value[0].id;
-    await loadChatMessages(activeChatId.value);
-    scrollToBottom(false);
-  }
+  // 不自动选中对话，显示欢迎主页
 });
 
 onUnmounted(() => {
@@ -634,6 +791,54 @@ onUnmounted(() => {
   wsConnectedChats.clear();
 });
 
+// ========== 监听弹窗状态，清除历史数据 ==========
+watch(showLoginModal, (isOpen) => {
+  if (isOpen) {
+    // 登录弹窗打开时，清除历史数据
+    loginForm.value = { username: '', password: '' };
+    formError.value = '';
+  }
+});
+
+watch(showRegisterModal, (isOpen) => {
+  if (isOpen) {
+    // 注册弹窗打开时，清除历史数据
+    registerForm.value = {
+      username: '',
+      password: '',
+      confirmPassword: '',
+      email: '',
+      avatarUrl: '',
+      avatarPreview: '',
+    };
+    formError.value = '';
+    registerErrors.value = {};
+  }
+});
+
+// 监听设置弹窗打开，刷新个人资料数据
+watch(showSettingsModal, (isOpen) => {
+  if (isOpen && currentUser.value) {
+    // 刷新个人资料数据
+    profileForm.value = {
+      avatarUrl: currentUser.value.avatar_url || '',
+      avatarPreview: currentUser.value.avatar_url || '',
+      username: currentUser.value.username || '',
+      email: currentUser.value.email || '',
+    };
+    // 清空密码表单和消息
+    passwordForm.value = {
+      oldPassword: '',
+      newPassword: '',
+      confirmPassword: '',
+    };
+    profileError.value = '';
+    profileSuccess.value = '';
+    // 切换到通用设置标签
+    activeSettingsTab.value = 'general';
+  }
+});
+
 // ========== 监听用户登录状态变化 ==========
 watch(currentUser, async (newUser, oldUser) => {
   // 当用户登录状态发生变化时（登录或登出），重新加载对话列表
@@ -641,12 +846,8 @@ watch(currentUser, async (newUser, oldUser) => {
   if ((newUser === null && oldUser !== null) || (newUser !== null && oldUser === null) ||
       (newUser && oldUser && newUser.user_id !== oldUser.user_id)) {
     await loadChats();
-    // 如果有对话，选中第一个
-    if (chats.value.length > 0) {
-      activeChatId.value = chats.value[0].id;
-      await loadChatMessages(activeChatId.value);
-      scrollToBottom(false);
-    }
+    // 用户状态变化后，回到欢迎主页
+    activeChatId.value = null;
   }
 });
 
@@ -838,6 +1039,10 @@ const visibleChats = computed(() => {
   return list;
 });
 
+// 判断是否在主页
+const isHomePage = computed(() => {
+  return chats.value.length === 0 || !activeChatId.value;
+});
 
 // ========== 当前对话相关 ==========
 const activeChatId = ref(null);
@@ -856,10 +1061,13 @@ const activeChat = computed(() => {
       messages: []
     };
   }
-  if (!activeChatId.value && chats.value.length > 0) {
-    activeChatId.value = chats.value[0].id;
-  }
-  return chats.value.find((c) => c.id === activeChatId.value) || chats.value[0];
+  return chats.value.find((c) => c.id === activeChatId.value) || {
+    id: 'empty',
+    title: '暂无对话',
+    pinned: false,
+    updatedAt: stamp(),
+    messages: []
+  };
 });
 
 // 输入框占位符
@@ -876,6 +1084,31 @@ watch(activeChatId, (newId, oldId) => {
     setupWebSocket(newId);
   }
 });
+
+// ========== 监听消息变化，自动滚动到底部 ==========
+watch(
+  () => activeChat.messages,
+  (newMessages, oldMessages) => {
+    // 当有新消息时，自动滚动到底部
+    if (newMessages && oldMessages) {
+      // 检查是否有新消息
+      const hasNewMessages = newMessages.length !== oldMessages.length;
+
+      // 检查最后一条消息是否从 loading 状态变为有内容
+      const lastMessageUpdated = newMessages.length > 0 &&
+        (!oldMessages || oldMessages.length === 0 ||
+          newMessages[newMessages.length - 1].id !== oldMessages[oldMessages.length - 1].id ||
+          (newMessages[newMessages.length - 1].isLoading !== oldMessages[oldMessages.length - 1]?.isLoading));
+
+      if (hasNewMessages || lastMessageUpdated) {
+        nextTick(() => {
+          scrollToBottom(true);
+        });
+      }
+    }
+  },
+  { deep: true }
+);
 
 function nameOf(id) {
   if (id === "user") return user.name;
@@ -916,6 +1149,38 @@ function newChat() {
   }
 }
 
+// 回到欢迎主页
+function goToHomePage() {
+  activeChatId.value = null;
+  homeDraft.value = '';
+  draft.value = '';
+  nextTick(() => {
+    if (homeInputRef.value) {
+      autoResizeTextarea(homeInputRef.value, 3, 100);
+    }
+  });
+}
+
+// 主页输入框发送消息
+async function handleHomeSend() {
+  const text = homeDraft.value.trim();
+  if (!text || isCreating.value) return;
+
+  // 将主页输入的内容转移到对话输入框
+  draft.value = text;
+  homeDraft.value = '';
+
+  // 重置主页输入框高度
+  nextTick(() => {
+    if (homeInputRef.value) {
+      autoResizeTextarea(homeInputRef.value, 3, 100);
+    }
+  });
+
+  // 调用send函数创建新对话
+  await send();
+}
+
 async function send() {
   const text = draft.value.trim();
   if (!text || isSending.value || isCreating.value) return;
@@ -924,6 +1189,11 @@ async function send() {
   if (!activeChat.value || activeChat.value.id === 'empty') {
     draft.value = "";
     quoted.value = null;
+    nextTick(() => {
+      if (inputRef.value) {
+        autoResizeTextarea(inputRef.value, 2, 10);
+      }
+    });
 
     isCreating.value = true;
     try {
@@ -1003,6 +1273,11 @@ async function send() {
   const chat = activeChat.value;
   draft.value = "";
   quoted.value = null;
+  nextTick(() => {
+    if (inputRef.value) {
+      autoResizeTextarea(inputRef.value, 2, 10);
+    }
+  });
 
   isSending.value = true;
   try {
@@ -1264,41 +1539,6 @@ async function summarize() {
   }
 }
 
-function download(filename, text) {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportCurrent(type) {
-  const c = activeChat.value;
-  if (!c) return;
-  const exportedAt = new Date().toISOString();
-
-  if (type === "json") {
-    const payload = {
-      id: c.id,
-      title: c.title,
-      updatedAt: c.updatedAt,
-      exportedAt,
-      messages: c.messages,
-    };
-    download(`${c.title}.json`, JSON.stringify(payload, null, 2));
-    return;
-  }
-
-  const header = `# ${c.title}\n# id: ${c.id}\n# exportedAt: ${exportedAt}\n\n`;
-  const body = c.messages
-    .map((m) => `[${m.time}] ${nameOf(m.authorId)}：\n${m.text || m.content || ''}`)
-    .join("\n\n---\n\n");
-
-  download(`${c.title}.txt`, header + body);
-}
-
 /**
  * 进入管理后台
  */
@@ -1358,12 +1598,8 @@ async function handleLogin() {
 
     // 登录成功后重新加载对话列表
     await loadChats();
-    // 如果有对话，选中第一个
-    if (chats.value.length > 0) {
-      activeChatId.value = chats.value[0].id;
-      await loadChatMessages(activeChatId.value);
-      scrollToBottom(false);
-    }
+    // 登录成功后显示欢迎主页
+    activeChatId.value = null;
   } catch (err) {
     formError.value = err.message || '登录失败，请检查用户名和密码';
   }
@@ -1411,16 +1647,13 @@ async function handleRegister() {
       confirmPassword: '',
       email: '',
       avatarUrl: '',
+      avatarPreview: '',
     };
 
     // 注册成功后重新加载对话列表
     await loadChats();
-    // 如果有对话，选中第一个
-    if (chats.value.length > 0) {
-      activeChatId.value = chats.value[0].id;
-      await loadChatMessages(activeChatId.value);
-      scrollToBottom(false);
-    }
+    // 注册成功后显示欢迎主页
+    activeChatId.value = null;
   } catch (err) {
     formError.value = err.message || '注册失败，请重试';
   }
@@ -1441,21 +1674,14 @@ async function handleLogout() {
 }
 
 /**
- * 检查用户权限（是否可以导出）
+ * 处理头像点击事件
  */
-function canExport() {
-  return currentUser.value !== null;
-}
-
-/**
- * 处理导出功能（带权限检查）
- */
-function exportCurrentWithAuth(type) {
-  if (!canExport()) {
+function handleAvatarClick() {
+  if (currentUser.value) {
+    showSettingsModal.value = true;
+  } else {
     showLoginModal.value = true;
-    return;
   }
-  exportCurrent(type);
 }
 
 // ========== 主题相关 ==========
@@ -1593,6 +1819,8 @@ async function updateProfile() {
       avatar_url: profileForm.value.avatarUrl || null,
     });
     currentUser.value = result.user;
+    // 更新个人信息表单的预览
+    profileForm.value.avatarPreview = profileForm.value.avatarUrl;
     profileSuccess.value = '个人信息已更新';
     setTimeout(() => {
       profileSuccess.value = '';
@@ -1640,6 +1868,170 @@ async function changePassword() {
   }
 }
 
+// ========== 头像上传相关函数 ==========
+
+/**
+ * 压缩图片
+ * @param {File} file - 原始图片文件
+ * @param {number} maxWidth - 最大宽度（默认800）
+ * @param {number} maxHeight - 最大高度（默认800）
+ * @param {number} quality - 压缩质量 0-1（默认0.8）
+ */
+function compressImage(file, maxWidth = 800, maxHeight = 800, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    // 如果文件已经很小（小于200KB），直接返回
+    if (file.size < 200 * 1024) {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = error => reject(error);
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (e) => {
+      const img = new Image();
+      img.src = e.target.result;
+
+      img.onload = () => {
+        // 计算压缩后的尺寸
+        let width = img.width;
+        let height = img.height;
+
+        // 按比例缩放
+        if (width > height) {
+          if (width > maxWidth) {
+            height *= maxWidth / width;
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width *= maxHeight / height;
+            height = maxHeight;
+          }
+        }
+
+        // 创建 canvas 进行压缩
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+
+        // 转换为 base64，使用指定质量
+        const compressedDataUrl = canvas.toDataURL('image/jpeg', quality);
+        resolve(compressedDataUrl);
+      };
+
+      img.onerror = (error) => {
+        reject(new Error('图片加载失败'));
+      };
+    };
+
+    reader.onerror = (error) => {
+      reject(error);
+    };
+  });
+}
+
+/**
+ * 将文件转换为 base64
+ */
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = error => reject(error);
+  });
+}
+
+/**
+ * 触发注册头像文件选择
+ */
+function triggerRegisterAvatarInput() {
+  registerAvatarInputRef.value?.click();
+}
+
+/**
+ * 处理注册头像选择
+ */
+async function handleRegisterAvatarChange(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    formError.value = '请选择图片文件';
+    return;
+  }
+
+  // 验证文件大小（限制为 10MB，但会自动压缩）
+  const maxSize = 10 * 1024 * 1024; // 10MB
+  if (file.size > maxSize) {
+    formError.value = '图片大小不能超过 10MB';
+    return;
+  }
+
+  try {
+    formError.value = '正在处理图片...';
+
+    // 压缩图片（最大800x800，质量0.8）
+    const compressedImage = await compressImage(file, 800, 800, 0.8);
+
+    registerForm.value.avatarPreview = compressedImage;
+    registerForm.value.avatarUrl = compressedImage;
+    formError.value = '';
+  } catch (err) {
+    console.error('Failed to process image:', err);
+    formError.value = '图片处理失败，请重试';
+  }
+}
+
+/**
+ * 触发个人资料头像文件选择
+ */
+function triggerProfileAvatarInput() {
+  profileAvatarInputRef.value?.click();
+}
+
+/**
+ * 处理个人资料头像选择
+ */
+async function handleProfileAvatarChange(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  // 验证文件类型
+  if (!file.type.startsWith('image/')) {
+    profileError.value = '请选择图片文件';
+    return;
+  }
+
+  // 验证文件大小（限制为 10MB，但会自动压缩）
+  const maxSize = 10 * 1024 * 1024; // 10MB
+  if (file.size > maxSize) {
+    profileError.value = '图片大小不能超过 10MB';
+    return;
+  }
+
+  try {
+    profileError.value = '正在处理图片...';
+
+    // 压缩图片（最大800x800，质量0.8）
+    const compressedImage = await compressImage(file, 800, 800, 0.8);
+
+    profileForm.value.avatarPreview = compressedImage;
+    profileForm.value.avatarUrl = compressedImage;
+    profileError.value = '';
+  } catch (err) {
+    console.error('Failed to process image:', err);
+    profileError.value = '图片处理失败，请重试';
+  }
+}
+
 // ========== 数据管理相关 ==========
 
 /**
@@ -1647,17 +2039,132 @@ async function changePassword() {
  */
 async function exportAllData() {
   try {
-    const result = await apiClient.exportAllChats();
-    const exportedAt = new Date().toISOString();
-    const payload = {
-      exportedAt,
-      chats: result.chats,
-    };
-    download(`all_chats_${new Date().toISOString().split('T')[0]}.json`, JSON.stringify(payload, null, 2));
-    alert('导出成功');
+    // 后端直接返回 ZIP 文件
+    await apiClient.exportAllChats();
   } catch (err) {
     console.error('导出失败:', err);
     alert('导出失败: ' + err.message);
+  }
+}
+
+// ========== 菜单相关函数 ==========
+
+/**
+ * 切换菜单显示状态
+ */
+function toggleMenu(chatId) {
+  if (showMenuFor.value === chatId) {
+    showMenuFor.value = null;
+  } else {
+    showMenuFor.value = chatId;
+  }
+}
+
+/**
+ * 开始重命名对话
+ */
+function startRename(chat) {
+  // 先关闭菜单
+  showMenuFor.value = null;
+  // 设置编辑状态
+  chat.isEditing = true;
+  // 去除旧的"主题："前缀（如果存在）
+  const titleWithoutPrefix = chat.title.replace(/^主题：/, '');
+  chat.editingTitle = titleWithoutPrefix;
+  // 聚焦输入框
+  nextTick(() => {
+    const inputs = document.querySelectorAll('.chatTitleInput');
+    if (inputs.length > 0) {
+      inputs[0].focus();
+      inputs[0].select();
+    }
+  });
+}
+
+/**
+ * 完成重命名
+ */
+async function finishRename(chat) {
+  if (!chat.isEditing) return;
+
+  const newTitle = chat.editingTitle?.trim();
+  const oldTitle = chat.title;
+
+  if (!newTitle) {
+    // 标题为空，取消编辑
+    cancelRename(chat);
+    return;
+  }
+
+  // 检查是否实际修改了（与去除前缀的原标题比较）
+  const oldTitleWithoutPrefix = oldTitle.replace(/^主题：/, '');
+  if (newTitle === oldTitleWithoutPrefix) {
+    // 未修改，取消编辑
+    cancelRename(chat);
+    return;
+  }
+
+  // 立即更新前端显示（乐观更新）
+  chat.title = newTitle;
+  chat.isEditing = false;
+  chat.editingTitle = '';
+
+  // 异步更新数据库
+  try {
+    await apiClient.renameChat(chat.id, newTitle);
+    console.log('重命名成功:', newTitle);
+  } catch (err) {
+    console.error('重命名失败:', err);
+    // 失败时恢复原来的名字
+    chat.title = oldTitle;
+    alert('重命名失败: ' + err.message);
+  }
+}
+
+/**
+ * 取消重命名
+ */
+function cancelRename(chat) {
+  chat.isEditing = false;
+  chat.editingTitle = '';
+}
+
+/**
+ * 导出单个对话为TXT
+ */
+async function exportSingleChat(chat) {
+  // 关闭菜单
+  showMenuFor.value = null;
+  try {
+    await apiClient.exportChatToTxt(chat.id);
+  } catch (err) {
+    console.error('导出失败:', err);
+    alert('导出失败: ' + err.message);
+  }
+}
+
+/**
+ * 确认删除单个对话
+ */
+async function confirmDeleteSingle(chat) {
+  // 关闭菜单
+  showMenuFor.value = null;
+
+  if (!confirm(`⚠️ 确定要删除对话"${chat.title}"吗？此操作不可恢复！`)) {
+    return;
+  }
+
+  try {
+    await apiClient.deleteChat(chat.id);
+    // 从列表中移除
+    chats.value = chats.value.filter(c => c.id !== chat.id);
+    // 如果删除的是当前对话，回到欢迎主页
+    if (activeChatId.value === chat.id) {
+      activeChatId.value = null;
+    }
+  } catch (err) {
+    console.error('删除失败:', err);
+    alert('删除失败: ' + err.message);
   }
 }
 
@@ -1673,24 +2180,37 @@ async function confirmDeleteAll() {
     return;
   }
 
+  // 立即清空本地对话列表（乐观更新）
+  chats.value = [];
+  activeChatId.value = null;
+
   try {
     await apiClient.deleteAllChats();
     alert('所有对话已删除');
-    // 重新加载对话列表
+    // 重新加载对话列表（虽然应该为空了）
     await loadChats();
-    if (chats.value.length > 0) {
-      activeChatId.value = chats.value[0].id;
-      await loadChatMessages(activeChatId.value);
-    } else {
-      activeChatId.value = null;
-    }
+    // 删除所有对话后，保持欢迎主页状态
+    activeChatId.value = null;
   } catch (err) {
     console.error('删除失败:', err);
     alert('删除失败: ' + err.message);
+    // 失败后重新加载
+    await loadChats();
   }
 }
 
 </script>
+
+<style>
+/* 确保页面不会滚动 */
+html, body {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  height: 100%;
+  width: 100%;
+}
+</style>
 
 <style scoped>
 .app{
@@ -1698,7 +2218,9 @@ async function confirmDeleteAll() {
   display:grid;
   grid-template-columns: 340px 1fr;
   overflow: hidden;
+  transition: grid-template-columns .3s ease;
 }
+
 /* 置顶文字按钮（替代星星） */
 .pinText{
   font-size:12px;
@@ -1788,6 +2310,7 @@ async function confirmDeleteAll() {
   padding:10px 10px 16px;
   border-bottom:1px solid var(--line);
   margin-bottom:14px;
+  position: relative;
 }
 .logo{
   width:44px;height:44px;
@@ -1799,6 +2322,39 @@ async function confirmDeleteAll() {
 }
 .title .name{ font-size:18px; font-weight:800; }
 .title .sub{ font-size:12px; color:var(--muted); margin-top:2px; }
+
+/* 开启新对话按钮 */
+.newChatBtn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  border: 1px solid rgba(106,167,255,.3);
+  background: rgba(106,167,255,.15);
+  color: #6aa7ff;
+  font-size: 24px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .2s ease;
+  flex-shrink: 0;
+}
+
+.newChatBtn:hover {
+  background: rgba(106,167,255,.25);
+  border-color: rgba(106,167,255,.5);
+  transform: translateY(-50%) scale(1.05);
+  box-shadow: 0 0 15px rgba(106,167,255,.3);
+}
+
+.newChatBtn:active {
+  transform: translateY(-50%) scale(0.95);
+}
 
 .section{
   margin-top:14px;
@@ -1857,7 +2413,6 @@ async function confirmDeleteAll() {
   border-color: rgba(106,167,255,.25);
   background: rgba(106,167,255,.10);
 }
-.chatTitle{ font-weight:900; }
 .chatMeta{
   margin-top:6px;
   font-size:12px;
@@ -1866,30 +2421,6 @@ async function confirmDeleteAll() {
   gap:6px;
   align-items:center;
 }
-
-.exportRow{
-  display:flex;
-  gap:10px;
-  padding:10px 4px 0;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 1;
-}
-.topic{
-  flex:1;
-  padding:10px 12px;
-  border-radius:12px;
-  border:1px solid rgba(106,167,255,.22);
-  background: rgba(106,167,255,.12);
-  color: var(--text);
-  cursor:pointer;
-  font-weight:800;
-}
-.topic2{
-  border-color: rgba(255,255,255,.10);
-  background: rgba(255,255,255,.05);
-}
-.topic:hover{ filter: brightness(1.05); }
 
 .hint{
   margin:10px 6px 0;
@@ -2012,6 +2543,121 @@ async function confirmDeleteAll() {
   height:100vh;
   overflow:hidden;
 }
+
+/* 主页模式 */
+.main.home-mode {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 对话容器模式 - 保持grid布局 */
+.chatContainer {
+  display: contents;
+}
+
+.homePage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, rgba(17,26,51,0.95), rgba(10,16,34,0.98));
+}
+
+.homeContent {
+  max-width: 800px;
+  width: 90%;
+  text-align: center;
+  animation: fadeIn 0.6s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.homeLogo {
+  margin-bottom: 40px;
+}
+
+.logoLarge {
+  font-size: 72px;
+  font-weight: 900;
+  color: var(--text);
+  margin-bottom: 12px;
+  letter-spacing: 4px;
+}
+
+.logoText {
+  font-size: 20px;
+  color: var(--muted);
+  font-weight: 600;
+  letter-spacing: 2px;
+}
+
+.homeIntro {
+  margin-bottom: 50px;
+  color: var(--text);
+}
+
+.homeIntro h2 {
+  font-size: 32px;
+  font-weight: 800;
+  margin-bottom: 16px;
+  color: var(--text);
+}
+
+.homeIntro p {
+  font-size: 16px;
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+.featureList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  display: inline-block;
+}
+
+.featureList li {
+  font-size: 15px;
+  color: var(--text);
+  margin-bottom: 12px;
+  padding: 8px 16px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,0.08);
+  transition: all 0.3s ease;
+}
+
+.featureList li:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(106,167,255,0.3);
+  transform: translateX(5px);
+}
+
+.homeInput {
+  max-width: 700px;
+  margin: 0 auto;
+  margin-right: 20px;
+}
+
+.homeInputRow {
+  margin-bottom: 12px;
+}
+
+.homeInput {
+  font-size: 16px;
+  padding: 16px 50px 16px 16px;
+  overflow-y: auto;
+  line-height: 1.5;
+  min-height: 76px;
+  box-sizing: border-box;
+}
+
 .topbar{
   display:flex;
   align-items:center;
@@ -2020,8 +2666,15 @@ async function confirmDeleteAll() {
   border-bottom:1px solid var(--line);
   background: rgba(10,16,34,.45);
   backdrop-filter: blur(10px);
+  gap: 16px;
 }
-.topicTitle .big{ font-weight:900; }
+.topicTitle .big {
+  font-weight:900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 600px;
+}
 .topicTitle .small{ margin-top:4px; font-size:12px; color:var(--muted); }
 
 .status{
@@ -2055,16 +2708,19 @@ async function confirmDeleteAll() {
 .msg{ display:flex; }
 .msg.me{ justify-content:flex-end; padding-right: 100px; }
 .bubble{
-  width: 800px;
+  max-width: 800px;
+  width: fit-content;
   border-radius:18px;
   border:1px solid rgba(255,255,255,.10);
   background: rgba(255,255,255,.05);
   padding:12px 14px;
   box-shadow: 0 10px 30px rgba(0,0,0,.18);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 .msg.me .bubble{
-  width: auto;
   max-width: 500px;
+  min-width: 100px;
 }
 .head{
   display:flex;
@@ -2083,7 +2739,7 @@ async function confirmDeleteAll() {
   border:1px solid rgba(255,255,255,.10);
 }
 .time{ margin-left:auto; opacity:.9; }
-.content p{ margin:0; line-height:1.55; font-size:14px; color: var(--text); }
+.content p{ margin:0; line-height:1.55; font-size:14px; color: var(--text); word-wrap: break-word; overflow-wrap: break-word; }
 .content p + p{ margin-top:8px; }
 .actions{ display:flex; gap:8px; margin-top:10px; }
 .mini{
@@ -2104,9 +2760,11 @@ async function confirmDeleteAll() {
   backdrop-filter: blur(10px);
   padding:12px 18px 14px;
   flex-shrink: 0;
+  position: relative;
+  z-index: 10;
 }
 .inputRow{
-  max-width: 980px;
+  max-width: 1000px;
   margin: 0 auto;
   display:flex;
   gap:10px;
@@ -2118,6 +2776,7 @@ async function confirmDeleteAll() {
   display:flex;
   align-items:flex-end;
   gap:8px;
+  overflow: visible;
 }
 .input{
   flex:1;
@@ -2128,12 +2787,18 @@ async function confirmDeleteAll() {
   color: var(--text);
   padding:12px 50px 12px 12px;
   outline:none;
+  overflow-y: auto;
+  overflow-x: hidden;
+  line-height: 1.5;
+  min-height: 57px;
+  box-sizing: border-box;
 }
 .input:focus{ border-color: rgba(106,167,255,.35); }
 .sendArrowBtn{
   position:absolute;
-  right:8px;
-  bottom:8px;
+  right:24px;
+  top: 50%;
+  transform: translateY(-50%);
   width:36px;
   height:36px;
   border-radius:10px;
@@ -2172,8 +2837,8 @@ async function confirmDeleteAll() {
 }
 .summary-btn:disabled{ opacity:.45; cursor:not-allowed; }
 .tips{
-  max-width:980px;
-  margin:10px auto 0;
+  max-width:1000px;
+  margin: 10px auto 0;
   font-size:12px;
   color:var(--muted);
   display:flex;
@@ -2182,8 +2847,8 @@ async function confirmDeleteAll() {
 }
 
 .quote{
-  max-width:980px;
-  margin:0 auto 10px;
+  max-width:1000px;
+  margin: 0 auto 10px;
   padding:10px 12px;
   border-radius:14px;
   border:1px solid rgba(255,255,255,.10);
@@ -2220,15 +2885,17 @@ async function confirmDeleteAll() {
 /* Loading指示器 */
 .loading-indicator {
   display: flex;
-  gap: 8px;
-  padding: 8px 0;
+  gap: 12px;
+  padding: 16px 12px;
+  align-items: center;
 }
 
 .dot-bounce {
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: rgba(106,167,255,.6);
+  background: linear-gradient(135deg, rgba(106,167,255,.8), rgba(106,167,255,.6));
+  box-shadow: 0 0 10px rgba(106,167,255,.4);
   animation: bounce 1.4s infinite ease-in-out both;
 }
 
@@ -2483,6 +3150,138 @@ async function confirmDeleteAll() {
 
 .formFooter a:hover {
   text-decoration: underline;
+}
+
+/* ========== 头像上传组件样式 ========== */
+.avatarUploadContainer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.avatarPreview {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 2px dashed rgba(106,167,255,.40);
+  background: rgba(255,255,255,.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all .18s ease;
+}
+
+.avatarPreview:hover {
+  border-color: rgba(106,167,255,.60);
+  background: rgba(106,167,255,.08);
+}
+
+.avatarPreview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatarPlaceholder {
+  font-size: 36px;
+  color: rgba(106,167,255,.60);
+  font-weight: 300;
+}
+
+.avatarUploadHint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 个人资料头像上传容器 */
+.profileAvatarContainer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.02);
+}
+
+.profileAvatarPreview {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  border: 2px solid rgba(106,167,255,.40);
+  background: rgba(255,255,255,.03);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  overflow: hidden;
+  transition: all .18s ease;
+}
+
+.profileAvatarPreview:hover {
+  border-color: rgba(106,167,255,.60);
+  background: rgba(106,167,255,.08);
+}
+
+.profileAvatarPreview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.changeAvatarBtn {
+  margin-top: 12px;
+  padding: 8px 16px;
+  border-radius: 10px;
+  border: 1px solid rgba(106,167,255,.30);
+  background: rgba(106,167,255,.15);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.changeAvatarBtn:hover {
+  background: rgba(106,167,255,.25);
+  border-color: rgba(106,167,255,.45);
+}
+
+/* 用户头像图片样式 */
+.userAvatarImage {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* ========== 账号管理左右分栏样式 ========== */
+.accountManagementContainer {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.accountLeftPanel,
+.accountRightPanel {
+  flex: 1;
+  min-width: 0;
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.02);
+}
+
+.accountLeftPanel h3,
+.accountRightPanel h3 {
+  margin: 0 0 16px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
 }
 
 /* ========== 已公开对话轮播图样式 ========== */
@@ -2773,30 +3572,6 @@ async function confirmDeleteAll() {
   border-color: #42a5f5;
 }
 
-:root[data-theme="light"] .topic {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  border-color: #5a67d8;
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-}
-
-:root[data-theme="light"] .topic:hover {
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-  filter: brightness(1.1);
-}
-
-:root[data-theme="light"] .topic2 {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-  border-color: #e91e63;
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(233, 30, 99, 0.3);
-}
-
-:root[data-theme="light"] .topic2:hover {
-  box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
-  filter: brightness(1.1);
-}
-
 :root[data-theme="light"] .chatItem {
   background: #ffffff;
   border-color: #e0e0e0;
@@ -3058,4 +3833,192 @@ async function confirmDeleteAll() {
   border-color: #bdbdbd;
   color: #000000;
 }
+
+/* ========== 菜单和重命名相关样式 ========== */
+
+/* 对话操作区域 */
+.chatActions {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* 三点菜单按钮 */
+.moreBtn {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.04);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all .18s ease;
+  position: relative;
+}
+
+.moreBtn:hover {
+  background: rgba(255,255,255,.08);
+  border-color: rgba(255,255,255,.20);
+  color: var(--text);
+}
+
+.moreBtn.active {
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.35);
+  color: #6aa7ff;
+  box-shadow: 0 0 0 3px rgba(106,167,255,.12);
+}
+
+/* 菜单下拉框 */
+.menuDropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  margin-top: 6px;
+  min-width: 150px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.12);
+  background: rgba(17,26,51,.98);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 8px 24px rgba(0,0,0,.35);
+  overflow: hidden;
+  z-index: 1000;
+  animation: menuIn .2s ease-out;
+}
+
+@keyframes menuIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 菜单项 */
+.menuItem {
+  width: 100%;
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all .15s ease;
+}
+
+.menuItem:hover {
+  background: rgba(106,167,255,.10);
+}
+
+.menuItem.delete {
+  color: #ff8888;
+}
+
+.menuItem.delete:hover {
+  background: rgba(255,102,102,.12);
+}
+
+.menuIcon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+}
+
+/* 重命名输入框 */
+.chatTitleInput {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 900;
+  outline: none;
+  border-bottom: 2px solid rgba(106,167,255,.4);
+  transition: border-color .18s ease;
+}
+
+.chatTitleInput:focus {
+  border-bottom-color: rgba(106,167,255,.8);
+}
+
+.chatTitleInput::placeholder {
+  color: rgba(255,255,255,.45);
+}
+
+/* 聊天主区域（适配新的操作按钮布局） */
+.chatMain {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.chatItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chatTitle {
+  font-weight: 900;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* 浅色模式下的菜单 */
+:root[data-theme="light"] .menuDropdown {
+  background: rgba(255,255,255,.98);
+  border-color: #e0e0e0;
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
+}
+
+:root[data-theme="light"] .menuItem {
+  color: #000000;
+}
+
+:root[data-theme="light"] .menuItem:hover {
+  background: rgba(106,167,255,.12);
+}
+
+:root[data-theme="light"] .menuItem.delete {
+  color: #e53935;
+}
+
+:root[data-theme="light"] .menuItem.delete:hover {
+  background: rgba(229,57,53,.12);
+}
+
+:root[data-theme="light"] .moreBtn.active {
+  background: rgba(106,167,255,.20);
+  border-color: #6aa7ff;
+  box-shadow: 0 0 0 3px rgba(106,167,255,.15);
+}
+
+:root[data-theme="light"] .chatTitleInput {
+  color: #000000;
+  border-bottom-color: rgba(106,167,255,.5);
+}
+
+:root[data-theme="light"] .chatTitleInput:focus {
+  border-bottom-color: #6aa7ff;
+}
+
+:root[data-theme="light"] .chatTitleInput::placeholder {
+  color: rgba(0,0,0,.45);
+}
+
 </style>

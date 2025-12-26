@@ -9,13 +9,15 @@ import os
 import sys
 import uuid
 import asyncio
+import zipfile
+import io
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Header, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 # 添加项目根目录到Python路径
 # server.py 位于 dev/api/ 目录下，需要向上两级到达项目根目录
@@ -51,16 +53,20 @@ from types import SimpleNamespace
 
 # 尝试导入数据库管理器
 _db_manager = None
+_db_available = False  # 单独跟踪数据库可用性
 try:
-    from dev.mysql.db_utils import DatabaseManager
+    from dev.mysql.db_utils import DatabaseManager, ensure_db_connected
     _db_manager = DatabaseManager.from_config()
-    if _db_manager.connect():
-        print("[API] 数据库连接成功，将支持历史对话加载")
+
+    # 尝试连接数据库
+    if ensure_db_connected():
+        print("[API] 数据库连接成功，将支持历史对话加载和用户认证")
+        _db_available = True
     else:
-        print("[API] 数据库连接失败，仅使用内存存储")
+        print("[API] 数据库连接失败，仅支持游客模式（无法登录/注册）")
         _db_manager = None
 except Exception as e:
-    print(f"[API] 数据库初始化失败: {e}，仅使用内存存储")
+    print(f"[API] 数据库初始化失败: {e}，仅支持游客模式（无法登录/注册）")
     _db_manager = None
 
 # ========== FastAPI 应用初始化 ==========
@@ -314,7 +320,7 @@ def load_session_from_db(chat_id: str):
         sessions[chat_id] = {
             "chat_id": chat_id,
             "thread_id": chat_id,
-            "title": f"主题：{topic}",
+            "title": topic,  # 直接使用 topic 作为 title，不添加"主题："前缀
             "topic": topic,
             "user_id": thread_user_id,  # 添加用户ID
             "is_guest": (thread_user_id is None),  # 添加游客标识
@@ -452,6 +458,15 @@ async def startup_event():
     """应用启动时加载历史对话"""
     print("[API] 应用启动中...")
     load_all_sessions_from_db()
+    # 启动完成后打印访问信息
+    print("\n" + "="*50)
+    print("[OK] 服务器启动成功！")
+    print("="*50)
+    print("API地址:  http://localhost:8000")
+    print("API文档:  http://localhost:8000/docs")
+    print("WebSocket: ws://localhost:8000/ws/chat/{chat_id}")
+    print("="*50)
+    print()
 
 
 @app.get("/")
@@ -476,7 +491,7 @@ async def health_check():
 async def register(request: RegisterRequest):
     """用户注册"""
     if not _db_manager:
-        raise HTTPException(status_code=500, detail="数据库未连接")
+        raise HTTPException(status_code=503, detail="数据库服务不可用，请检查MySQL服务是否已启动")
 
     # 验证输入
     if len(request.username) < 3:
@@ -485,6 +500,19 @@ async def register(request: RegisterRequest):
         raise HTTPException(status_code=400, detail="密码至少6个字符")
 
     try:
+        print(f"[API] 尝试注册用户: {request.username}")
+
+        # 确保数据库连接存在
+        if not _db_manager.connection:
+            print("[API] 数据库未连接，尝试连接...")
+            if not _db_manager.connect():
+                print("[API] 数据库连接失败")
+                raise HTTPException(
+                    status_code=503,
+                    detail="数据库连接失败，请检查MySQL服务是否已启动"
+                )
+            print("[API] 数据库连接成功")
+
         with _db_manager.get_cursor() as cursor:
             # 检查用户名是否已存在
             cursor.execute("SELECT user_id FROM users WHERE username = %s", (request.username,))
@@ -518,6 +546,8 @@ async def register(request: RegisterRequest):
             # 生成访问令牌
             access_token = create_access_token(user_id, request.username, "user")
 
+            print(f"[API] 注册成功: {request.username} (user_id: {user_id})")
+
             return {
                 "message": "注册成功",
                 "user": {
@@ -532,21 +562,38 @@ async def register(request: RegisterRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[API] 注册失败: {e}")
-        raise HTTPException(status_code=500, detail="注册失败")
+        print(f"[API] 注册异常: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"注册失败: {str(e)}"
+        )
 
 
 @app.post("/api/auth/login")
 async def login(request: LoginRequest):
     """用户登录"""
     if not _db_manager:
-        raise HTTPException(status_code=503, detail="数据库服务不可用，请稍后重试")
+        print("[API] 登录失败: 数据库管理器未初始化")
+        raise HTTPException(
+            status_code=503,
+            detail="数据库服务不可用，请检查MySQL服务是否已启动"
+        )
 
     try:
+        print(f"[API] 尝试登录用户: {request.username}")
+
         # 尝试连接数据库
         if not _db_manager.connection:
+            print("[API] 数据库未连接，尝试连接...")
             if not _db_manager.connect():
-                raise HTTPException(status_code=503, detail="数据库连接失败，请稍后重试")
+                print("[API] 数据库连接失败")
+                raise HTTPException(
+                    status_code=503,
+                    detail="数据库连接失败，请检查MySQL服务是否已启动"
+                )
+            print("[API] 数据库连接成功")
 
         with _db_manager.get_cursor() as cursor:
             # 查询用户
@@ -557,14 +604,17 @@ async def login(request: LoginRequest):
             user = cursor.fetchone()
 
             if not user:
+                print(f"[API] 登录失败: 用户不存在 - {request.username}")
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
             # 验证密码
             if not verify_password(request.password, user["password_hash"]):
+                print(f"[API] 登录失败: 密码错误 - {request.username}")
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
             # 检查账户是否激活
             if not user["is_active"]:
+                print(f"[API] 登录失败: 账户已禁用 - {request.username}")
                 raise HTTPException(status_code=403, detail="账户已被禁用")
 
             # 更新最后登录时间
@@ -589,6 +639,8 @@ async def login(request: LoginRequest):
                 # 会话保存失败，但仍允许登录
                 print(f"[API] 警告: 无法保存用户会话: {session_err}")
 
+            print(f"[API] 登录成功: {request.username} (role: {user['role']})")
+
             return {
                 "message": "登录成功",
                 "user": {
@@ -604,8 +656,13 @@ async def login(request: LoginRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"[API] 登录失败: {e}")
-        raise HTTPException(status_code=500, detail="登录失败，请稍后重试")
+        print(f"[API] 登录异常: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"登录失败: {str(e)}"
+        )
 
 
 @app.get("/api/auth/me")
@@ -661,6 +718,146 @@ async def logout(
         raise HTTPException(status_code=500, detail="登出失败")
 
 
+# ========== 用户个人信息管理 API ==========
+
+class UpdateProfileRequest(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+@app.put("/api/user/profile")
+async def update_profile(
+    request: UpdateProfileRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """更新用户个人信息"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 构建更新字段
+            update_fields = []
+            params = []
+
+            if request.username is not None:
+                # 检查用户名是否已被其他用户使用
+                cursor.execute(
+                    "SELECT user_id FROM users WHERE username = %s AND user_id != %s",
+                    (request.username, current_user["user_id"])
+                )
+                if cursor.fetchone():
+                    raise HTTPException(status_code=400, detail="用户名已被使用")
+                update_fields.append("username = %s")
+                params.append(request.username)
+
+            if request.email is not None:
+                update_fields.append("email = %s")
+                params.append(request.email)
+
+            if request.avatar_url is not None:
+                update_fields.append("avatar_url = %s")
+                params.append(request.avatar_url)
+
+            if not update_fields:
+                raise HTTPException(status_code=400, detail="没有要更新的字段")
+
+            # 添加更新时间和用户ID
+            params.append(datetime.now())
+            params.append(current_user["user_id"])
+
+            # 执行更新
+            query = f"UPDATE users SET {', '.join(update_fields)}, updated_at = %s WHERE user_id = %s"
+            cursor.execute(query, params)
+
+            # 查询更新后的用户信息
+            cursor.execute(
+                "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
+                (current_user["user_id"],)
+            )
+            updated_user = cursor.fetchone()
+
+            print(f"[API] 更新用户信息成功: {updated_user['username']}")
+
+            return {
+                "message": "个人信息已更新",
+                "user": updated_user
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 更新个人信息失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="更新个人信息失败")
+
+
+@app.put("/api/user/password")
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """修改密码"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 查询用户当前密码
+            cursor.execute(
+                "SELECT password_hash FROM users WHERE user_id = %s",
+                (current_user["user_id"],)
+            )
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            # 验证旧密码
+            if not verify_password(request.old_password, user["password_hash"]):
+                raise HTTPException(status_code=400, detail="当前密码错误")
+
+            # 检查新密码长度
+            if len(request.new_password) < 6:
+                raise HTTPException(status_code=400, detail="新密码至少6个字符")
+
+            # 更新密码
+            new_password_hash = hash_password(request.new_password)
+            cursor.execute(
+                "UPDATE users SET password_hash = %s, updated_at = %s WHERE user_id = %s",
+                (new_password_hash, datetime.now(), current_user["user_id"])
+            )
+
+            # 删除用户的所有会话，强制重新登录
+            cursor.execute(
+                "DELETE FROM user_sessions WHERE user_id = %s",
+                (current_user["user_id"],)
+            )
+
+            print(f"[API] 修改密码成功: {current_user['username']}")
+
+            return {"message": "密码已修改，请重新登录"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 修改密码失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="修改密码失败")
+
+
 # ========== 对话管理 API ==========
 
 @app.post("/api/chats")
@@ -672,7 +869,9 @@ async def create_chat(
     thread_id = uuid.uuid4().hex[:12]
     chat_id = thread_id
     topic = request.topic
-    title = request.title or f"主题：{topic}"
+    # 生成标题时截断过长的主题，最多显示30个字符
+    display_topic = topic[:30] + ("..." if len(topic) > 30 else "")
+    title = request.title or f"主题：{display_topic}"
     user_id = current_user["user_id"] if current_user else None
     is_guest = (user_id is None)  # 游客标识
 
@@ -724,11 +923,48 @@ async def create_chat(
         set_agenda(state, agenda_items, active_item_id)
         state.phase = "discussion"
 
+    # ========== 自动调用下一个智能体发言（游客和登录用户都执行） ==========
+    # 获取历史记录（游客为空，登录用户从数据库获取）
+    history = history_store.tail(thread_id, 12) if not is_guest else []
+
+    # 组织者路由决定下一个发言者
+    decision = organizer.route(state, history)
+    next_speaker = decision["next_speaker"]
+    task_hint = decision["task_hint"]
+    stance_hint = decision.get("stance_hint")
+
+    # 调用智能体生成发言
+    utterance = call_companion(
+        speaker=next_speaker,
+        state=state,
+        task_hint=task_hint,
+        stance_hint=stance_hint,
+        tail_n=6,
+    )
+
+    # 记录发言（非游客才保存到历史）
+    if not is_guest:
+        history_store.record_speaker(thread_id, next_speaker, utterance)
+    advance_turn(state, next_speaker)
+
+    # 更新状态
+    patch = organizer.update_from_new_public_event(state, history_store.tail(thread_id, 12) if not is_guest else [])
+    apply_patch(state, patch)
+
+    # 映射角色ID
+    role_id_map = {
+        "理论家": "theorist",
+        "实践者": "practitioner",
+        "质疑者": "skeptic",
+        "组织者": "facilitator",
+    }
+    first_agent_id = role_id_map.get(next_speaker, "theorist")
+
     # 存储会话（添加 user_id 用于过滤）
     sessions[chat_id] = {
         "chat_id": chat_id,
         "thread_id": thread_id,
-        "title": title,
+        "title": topic,  # 直接使用 topic 作为 title，不添加"主题："前缀
         "topic": topic,
         "user_id": user_id,  # 添加用户ID到会话
         "is_guest": is_guest,  # 添加游客标识
@@ -757,6 +993,17 @@ async def create_chat(
             },
         ],
     }
+
+    # 添加第一个智能体的发言消息（游客和登录用户都添加）
+    sessions[chat_id]["messages"].append({
+        "message_id": uuid.uuid4().hex,
+        "chat_id": chat_id,
+        "author_id": first_agent_id,
+        "author_name": next_speaker,
+        "content": utterance,
+        "timestamp": get_current_time(),
+        "role": next_speaker,
+    })
 
     return {
         "chat_id": chat_id,
@@ -845,6 +1092,96 @@ async def get_chats(
     chats.sort(key=lambda x: x["updatedAt"], reverse=True)
 
     return ChatListResponse(chats=chats[:limit], total=len(chats))
+
+
+@app.get("/api/chats/export")
+async def export_all_chats(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """导出用户的所有对话为 ZIP 文件"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        # 查询用户的所有对话
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute(
+                """SELECT thread_id, topic, created_at, updated_at
+                   FROM threads
+                   WHERE user_id = %s
+                   ORDER BY updated_at DESC""",
+                (current_user["user_id"],)
+            )
+            threads = cursor.fetchall()
+
+            if not threads:
+                raise HTTPException(status_code=404, detail="没有可导出的对话")
+
+            # 创建 ZIP 文件在内存中
+            zip_buffer = io.BytesIO()
+
+            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                for thread in threads:
+                    thread_id = thread["thread_id"]
+
+                    # 获取该对话的所有消息
+                    events = _db_manager.get_thread_events(thread_id)
+
+                    # 格式化对话内容
+                    content_lines = [
+                        f"对话主题: {thread['topic']}",
+                        f"创建时间: {thread['created_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"更新时间: {thread['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"对话ID: {thread_id}",
+                        "",
+                        "=== 对话记录 ===",
+                        ""
+                    ]
+
+                    for event in events:
+                        timestamp = event.get('created_at', '').strftime('%Y-%m-%d %H:%M:%S') if event.get('created_at') else ''
+                        content_lines.append(f"[{timestamp}] {event['speaker']}:")
+                        content_lines.append(event['content'])
+                        content_lines.append("")
+
+                    # 添加到 ZIP
+                    filename = f"{thread['topic'][:50]}_{thread_id[:8]}.txt"
+                    # 确保文件名安全
+                    filename = filename.replace('/', '_').replace('\\', '_').replace(':', '_')
+                    zip_file.writestr(filename, '\n'.join(content_lines))
+
+            # 准备响应
+            zip_buffer.seek(0)
+            zip_bytes = zip_buffer.getvalue()
+
+            # 生成文件名: 用户名_对话记录_日期.zip
+            from urllib.parse import quote
+            date_str = datetime.now().strftime('%Y%m%d')
+            safe_username = current_user["username"].replace('/', '_').replace('\\', '_')
+            filename_ascii = f"{safe_username}_chats_{date_str}.zip"
+            filename_utf8 = f"{safe_username}_对话记录_{date_str}.zip"
+
+            # 使用 RFC 5987 编码格式支持中文文件名
+            encoded_filename = quote(filename_utf8.encode('utf-8'))
+            content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{encoded_filename}"
+
+            return StreamingResponse(
+                io.BytesIO(zip_bytes),
+                media_type="application/zip",
+                headers={
+                    "Content-Disposition": content_disposition
+                }
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 导出对话失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="导出对话失败")
 
 
 @app.get("/api/chats/{chat_id}")
@@ -998,6 +1335,134 @@ async def continue_chat(chat_id: str):
     raise HTTPException(status_code=500, detail="无法生成响应")
 
 
+# ========== Pydantic 数据模型 ==========
+class RenameChatRequest(BaseModel):
+    title: str
+
+
+@app.put("/api/chats/{chat_id}/rename")
+async def rename_chat(
+    chat_id: str,
+    request: RenameChatRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """重命名对话"""
+    if not request.title or not request.title.strip():
+        raise HTTPException(status_code=400, detail="标题不能为空")
+
+    new_title = request.title.strip()
+
+    # 更新内存中的会话
+    if chat_id in sessions:
+        sessions[chat_id]["title"] = new_title
+
+    # 更新数据库
+    if _db_manager:
+        try:
+            with _db_manager.get_cursor() as cursor:
+                cursor.execute(
+                    "UPDATE threads SET topic = %s, updated_at = %s WHERE thread_id = %s",
+                    (new_title, datetime.now(), chat_id)
+                )
+                print(f"[API] 重命名对话: {chat_id} -> {new_title}")
+        except Exception as e:
+            print(f"[API] 重命名对话失败: {e}")
+            raise HTTPException(status_code=500, detail="重命名失败")
+
+    return {"message": "重命名成功", "title": new_title}
+
+
+@app.get("/api/chats/{chat_id}/export")
+async def export_chat(chat_id: str):
+    """导出单个对话为TXT文件"""
+    messages = []
+    title = "对话"
+
+    # 首先尝试从内存中获取会话
+    if chat_id in sessions:
+        session = sessions[chat_id]
+        messages = session.get("messages", [])
+        title = session.get("title", "对话")
+    # 如果内存中没有，尝试从数据库加载
+    elif _db_manager:
+        try:
+            # 获取线程信息
+            with _db_manager.get_cursor() as cursor:
+                cursor.execute("SELECT topic FROM threads WHERE thread_id = %s", (chat_id,))
+                thread_info = cursor.fetchone()
+                if thread_info:
+                    title = thread_info.get("topic", "对话")
+
+                # 获取消息
+                events = _db_manager.get_thread_events(chat_id)
+                if events:
+                    for event in events:
+                        messages.append({
+                            "author_name": event.get("speaker", "未知"),
+                            "authorId": event.get("speaker", "未知"),
+                            "content": event.get("content", ""),
+                            "text": event.get("content", ""),
+                            "time": event.get("created_at", ""),
+                            "timestamp": event.get("created_at", ""),
+                        })
+        except Exception as e:
+            print(f"[API] 从数据库加载对话失败: {e}")
+
+    if not messages:
+        raise HTTPException(status_code=404, detail="对话不存在或没有消息")
+
+    # 构建TXT内容
+    lines = []
+    lines.append(f"# {title}\n\n")
+
+    for msg in messages:
+        author = msg.get("author_name", msg.get("authorId", "未知"))
+        content = msg.get("content", msg.get("text", ""))
+        timestamp = msg.get("time", msg.get("timestamp", ""))
+
+        # 格式化时间戳
+        time_str = ""
+        if timestamp:
+            try:
+                if isinstance(timestamp, str):
+                    if '.' in timestamp:
+                        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                    else:
+                        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
+                    time_str = dt.strftime("%H:%M")
+            except Exception as e:
+                print(f"[API] 时间戳格式化失败: {timestamp}, {e}")
+
+        # 只在有时间的显示时间，否则只显示角色名
+        if time_str:
+            lines.append(f"[{time_str}] {author}：\n{content}\n\n")
+        else:
+            lines.append(f"{author}：\n{content}\n\n")
+
+    txt_content = "".join(lines)
+
+    # 返回文件
+    from fastapi.responses import Response
+    from urllib.parse import quote
+
+    # 清理文件名中的特殊字符
+    safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_', '（', '）', '(', ')') else '_' for c in title)
+
+    # 使用RFC 5987编码格式支持中文文件名
+    filename_ascii = f"{safe_title}.txt"
+    filename_utf8 = f"{safe_title}.txt"
+    encoded_filename = quote(filename_utf8.encode('utf-8'))
+    content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{encoded_filename}"
+
+    return Response(
+        content=txt_content,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Disposition": content_disposition
+        }
+    )
+
+
 @app.post("/api/chats/{chat_id}/summary")
 async def summarize_chat(chat_id: str):
     """生成对话总结，对话继续进行"""
@@ -1034,14 +1499,87 @@ async def summarize_chat(chat_id: str):
     }
 
 
+@app.delete("/api/chats/all")
+async def delete_all_chats(
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """删除用户的所有对话"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 查询用户的所有对话 thread_id
+            cursor.execute(
+                "SELECT thread_id FROM threads WHERE user_id = %s",
+                (current_user["user_id"],)
+            )
+            threads = cursor.fetchall()
+
+            if not threads:
+                raise HTTPException(status_code=404, detail="没有可删除的对话")
+
+            deleted_count = 0
+            threads_to_delete = []
+
+            for thread in threads:
+                thread_id = thread["thread_id"]
+                threads_to_delete.append(thread_id)
+
+                # 删除相关的所有数据（外键会自动级联删除）
+                # threads 表会被删除，events 等会自动级联
+                cursor.execute("DELETE FROM threads WHERE thread_id = %s", (thread_id,))
+                deleted_count += 1
+
+            print(f"[API] 从数据库删除用户所有对话: {current_user['username']}, 删除了 {deleted_count} 个对话")
+
+            # 清除内存中的会话（只清除属于当前用户的对话）
+            for chat_id in list(sessions.keys()):
+                if chat_id in threads_to_delete:
+                    # 清理历史记录
+                    history_store.clear(chat_id)
+                    # 删除会话
+                    del sessions[chat_id]
+                    # 关闭WebSocket连接
+                    if chat_id in active_websockets:
+                        try:
+                            await active_websockets[chat_id].close()
+                        except Exception:
+                            pass
+                        del active_websockets[chat_id]
+
+            print(f"[API] 从内存清除会话: {len(threads_to_delete)} 个")
+
+            return {
+                "message": f"已删除 {deleted_count} 个对话",
+                "deleted_count": deleted_count
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 删除所有对话失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="删除对话失败")
+
+
 @app.delete("/api/chats/{chat_id}")
-async def delete_chat(chat_id: str):
+async def delete_chat(
+    chat_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
     """删除对话"""
+    # 首先检查会话是否在内存中
     if chat_id not in sessions:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    # 清理历史记录
+    # 获取thread_id
     thread_id = sessions[chat_id]["thread_id"]
+
+    # 清理历史记录
     history_store.clear(thread_id)
 
     # 删除会话
@@ -1054,6 +1592,16 @@ async def delete_chat(chat_id: str):
         except Exception:
             pass
         del active_websockets[chat_id]
+
+    # 如果数据库可用，从数据库中删除
+    if _db_manager:
+        try:
+            with _db_manager.get_cursor() as cursor:
+                # 删除相关的所有数据（外键会自动级联删除）
+                cursor.execute("DELETE FROM threads WHERE thread_id = %s", (chat_id,))
+                print(f"[API] 从数据库删除对话: {chat_id}")
+        except Exception as e:
+            print(f"[API] 删除数据库记录失败: {e}")
 
     return {"message": "对话已删除"}
 
@@ -1096,14 +1644,12 @@ if __name__ == "__main__":
     import uvicorn
 
     print("=== 智炬五维协同学习系统 API 服务器 ===")
-    print("启动服务器...")
-    print("API地址: http://localhost:8000")
-    print("API文档: http://localhost:8000/docs")
-    print("WebSocket: ws://localhost:8000/ws/chat/{chat_id}")
+    print("正在启动服务器...")
+    print()
 
     uvicorn.run(
         app,
         host="0.0.0.0",
         port=8000,
-        log_level="info",
+        log_level="info"
     )

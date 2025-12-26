@@ -62,8 +62,22 @@ class ApiClient {
     const response = await fetch(fullUrl, { ...defaultOptions, ...options });
 
     if (!response.ok) {
-      const error = await response.json().catch(() => ({ message: '请求失败' }));
-      throw new Error(error.message || `HTTP ${response.status}`);
+      // 尝试解析错误响应
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        console.error(`[API] 请求失败但无法解析错误响应: ${response.status}`, e);
+        errorData = { message: `HTTP ${response.status}` };
+      }
+
+      // 获取详细的错误信息（FastAPI使用detail字段）
+      const errorMessage = errorData.detail || errorData.message || `HTTP ${response.status}`;
+      console.error(`[API] 请求失败: ${response.status} ${response.statusText}`, {
+        url: fullUrl,
+        error: errorData,
+      });
+      throw new Error(errorMessage);
     }
 
     return response.json();
@@ -151,6 +165,70 @@ class ApiClient {
     return this.request(`/chats/${chatId}`, {
       method: 'DELETE',
     });
+  }
+
+  /**
+   * 重命名对话
+   * PUT /api/chats/{chatId}/rename
+   */
+  async renameChat(chatId, title) {
+    return this.request(`/chats/${chatId}/rename`, {
+      method: 'PUT',
+      body: JSON.stringify({ title }),
+    });
+  }
+
+  /**
+   * 导出单个对话为TXT
+   * GET /api/chats/{chatId}/export
+   */
+  async exportChatToTxt(chatId) {
+    const token = getToken();
+    const url = `${this.baseUrl}/chats/${chatId}/export`;
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    // 获取文件名 - 支持RFC 5987编码格式
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = '对话.txt';
+    if (contentDisposition) {
+      // 尝试匹配 RFC 5987 格式: filename*=UTF-8''encoded_filename
+      const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+      if (utf8Match) {
+        try {
+          filename = decodeURIComponent(utf8Match[1]);
+        } catch (e) {
+          console.warn('Failed to decode UTF-8 filename:', e);
+        }
+      } else {
+        // 回退到普通格式: filename="..."
+        const regularMatch = contentDisposition.match(/filename="?([^"]+)"?/);
+        if (regularMatch) {
+          filename = regularMatch[1];
+        }
+      }
+    }
+
+    // 获取文本内容并下载
+    const text = await response.text();
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
   }
 
   /**
@@ -355,7 +433,48 @@ class ApiClient {
    * GET /api/chats/export
    */
   async exportAllChats() {
-    return this.request('/chats/export');
+    const token = getToken();
+    const url = `${this.baseUrl}/chats/export`;
+
+    // 创建下载链接
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      // 尝试解析错误响应
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      throw new Error(errorData.detail || errorData.message || `HTTP ${response.status}`);
+    }
+
+    // 获取文件名
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = '对话记录.zip';
+    if (contentDisposition) {
+      const match = contentDisposition.match(/filename="?([^"]+)"?/);
+      if (match) {
+        filename = match[1];
+      }
+    }
+
+    // 获取 blob 并下载
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
   }
 
   /**

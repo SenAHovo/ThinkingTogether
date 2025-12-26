@@ -20,7 +20,8 @@
       "Bash(tasklist:*)",
       "Bash(echo:*)",
       "Bash(pip install:*)",
-      "Bash(npm run build:*)"
+      "Bash(npm run build:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

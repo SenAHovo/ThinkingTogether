@@ -63,18 +63,38 @@ class DatabaseManager:
     @contextmanager
     def get_cursor(self):
         """获取数据库游标的上下文管理器"""
+        # 确保连接存在且有效
         if not self.connection:
-            self.connect()
+            if not self.connect():
+                raise Exception("数据库连接失败，请检查MySQL服务是否已启动")
+
+        # 测试连接是否有效
+        try:
+            self.connection.ping(reconnect=True)
+        except Exception as e:
+            print(f"[数据库警告] 连接无效，尝试重连: {e}")
+            if not self.connect():
+                raise Exception("数据库重连失败，请检查MySQL服务是否已启动")
 
         cursor = self.connection.cursor()
         try:
             yield cursor
             self.connection.commit()
         except Exception as e:
-            self.connection.rollback()
+            # 在rollback时也要捕获异常，防止连接已断开时产生新的错误
+            try:
+                self.connection.rollback()
+            except Exception as rollback_err:
+                print(f"[数据库警告] rollback失败: {rollback_err}")
+                # 如果是连接断开导致的错误，清除连接标记
+                if "InterfaceError" in str(type(rollback_err)) or "(0, '')" in str(rollback_err):
+                    self.connection = None
             raise e
         finally:
-            cursor.close()
+            try:
+                cursor.close()
+            except Exception as close_err:
+                print(f"[数据库警告] 关闭游标失败: {close_err}")
 
     def generate_event_id(self) -> str:
         """生成事件ID"""
