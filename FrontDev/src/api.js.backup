@@ -8,47 +8,6 @@ const WS_BASE_URL = 'ws://localhost:8000/ws/chat';
 const TOKEN_KEY = 'access_token';
 const USER_KEY = 'current_user';
 
-// ========== 请求并发控制 ==========
-// 限制同时进行的请求数量，避免占用过多浏览器连接
-const MAX_CONCURRENT_REQUESTS = 4;
-let activeRequests = 0;
-const requestQueue = [];
-
-async function queueRequest(fn) {
-  // 将请求加入队列
-  return new Promise((resolve, reject) => {
-    requestQueue.push({ fn, resolve, reject });
-    processQueue();
-  });
-}
-
-async function processQueue() {
-  // 如果已达到最大并发数，等待
-  if (activeRequests >= MAX_CONCURRENT_REQUESTS) {
-    return;
-  }
-
-  // 从队列取出请求
-  const item = requestQueue.shift();
-  if (!item) {
-    return; // 队列为空
-  }
-
-  activeRequests++;
-
-  try {
-    const result = await item.fn();
-    item.resolve(result);
-  } catch (error) {
-    item.reject(error);
-  } finally {
-    activeRequests--;
-    // 处理下一个请求
-    processQueue();
-  }
-}
-
-
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -87,44 +46,41 @@ class ApiClient {
   }
 
   /**
-   * 通用请求方法（使用队列控制并发）
+   * 通用请求方法
    */
   async request(url, options = {}) {
-    // 使用队列控制并发，避免占用过多浏览器连接
-    return queueRequest(async () => {
-      const fullUrl = `${this.baseUrl}${url}`;
-      const token = getToken();
+    const fullUrl = `${this.baseUrl}${url}`;
+    const token = getToken();
 
-      const defaultOptions = {
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-        },
-      };
+    const defaultOptions = {
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+    };
 
-      const response = await fetch(fullUrl, { ...defaultOptions, ...options });
+    const response = await fetch(fullUrl, { ...defaultOptions, ...options });
 
-      if (!response.ok) {
-        // 尝试解析错误响应
-        let errorData;
-        try {
-          errorData = await response.json();
-        } catch (e) {
-          console.error(`[API] 请求失败但无法解析错误响应: ${response.status}`, e);
-          errorData = { message: `HTTP ${response.status}` };
-        }
-
-        // 获取详细的错误信息（FastAPI使用detail字段）
-        const errorMessage = errorData.detail || errorData.message || `HTTP ${response.status}`;
-        console.error(`[API] 请求失败: ${response.status} ${response.statusText}`, {
-          url: fullUrl,
-          error: errorData,
-        });
-        throw new Error(errorMessage);
+    if (!response.ok) {
+      // 尝试解析错误响应
+      let errorData;
+      try {
+        errorData = await response.json();
+      } catch (e) {
+        console.error(`[API] 请求失败但无法解析错误响应: ${response.status}`, e);
+        errorData = { message: `HTTP ${response.status}` };
       }
 
-      return response.json();
-    });
+      // 获取详细的错误信息（FastAPI使用detail字段）
+      const errorMessage = errorData.detail || errorData.message || `HTTP ${response.status}`;
+      console.error(`[API] 请求失败: ${response.status} ${response.statusText}`, {
+        url: fullUrl,
+        error: errorData,
+      });
+      throw new Error(errorMessage);
+    }
+
+    return response.json();
   }
 
   /**

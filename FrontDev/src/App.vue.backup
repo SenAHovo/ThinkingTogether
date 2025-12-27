@@ -1012,10 +1012,22 @@ async function sendMessage(chatId, content, action = 'send') {
 
 async function continueChat(chatId) {
   try {
-    // 后端立即返回 {status: "processing"}
-    // 智能体的实际响应通过WebSocket推送
     const result = await apiClient.continueChat(chatId);
-    console.log('[ContinueChat] 智能体正在思考:', result);
+    // 后端返回完整的消息列表，更新本地chat
+    const chat = chats.value.find(c => c.id === chatId);
+    if (chat && result.messages) {
+      // 将后端消息格式转换为前端格式
+      chat.messages = result.messages.map(msg => ({
+        id: msg.message_id || msg.id,
+        authorId: msg.author_id,
+        author_name: msg.author_name,
+        text: msg.content,
+        content: msg.content,
+        time: msg.timestamp,
+        role: msg.role
+      }));
+      chat.updatedAt = result.updated_at || stamp();
+    }
     return result;
   } catch (err) {
     console.error('继续对话失败:', err);
@@ -1069,42 +1081,17 @@ function setupWebSocket(chatId) {
     chatId,
     (data) => {
       // 处理收到的消息
-      console.log('[WebSocket] 收到消息:', data);
-
-      if (data.type === 'new_message') {
-        // 后端推送的新消息
+      if (data.type === 'message') {
         const chat = chats.value.find(c => c.id === chatId);
-        if (chat) {
-          const msgId = data.message.message_id;
-
-          // 检查消息是否已存在
-          if (!chat.messages.find(m => m.id === msgId)) {
-            // 移除loading消息
-            chat.messages = chat.messages.filter(m => !m.isLoading);
-
-            // 添加新消息
-            chat.messages.push({
-              id: msgId,
-              authorId: data.message.author_id,
-              author_name: data.message.author_name,
-              text: data.message.content,
-              content: data.message.content,
-              time: data.message.timestamp,
-              role: data.message.role
-            });
-            chat.updatedAt = stamp();
-            console.log('[WebSocket] 新消息已添加:', data.message);
-          }
-        }
-      } else if (data.type === 'error') {
-        // 后端推送的错误消息
-        console.error('[WebSocket] 收到错误:', data.message);
-        const chat = chats.value.find(c => c.id === chatId);
-        if (chat) {
-          // 移除loading消息
-          chat.messages = chat.messages.filter(m => !m.isLoading);
-          // 显示错误提示
-          alert('智能体生成失败: ' + data.message);
+        if (chat && !chat.messages.find(m => m.message_id === data.data.message_id)) {
+          chat.messages.push({
+            id: data.data.message_id,
+            authorId: data.data.author_id,
+            author_name: data.data.author_name,
+            text: data.data.content,
+            time: data.data.timestamp,
+          });
+          chat.updatedAt = stamp();
         }
       }
     },
@@ -1524,11 +1511,38 @@ async function askAI(isAutoTriggered = false) {
     chat.messages.push(loadingMsg);
     chat.updatedAt = stamp();
 
-    // 调用继续API（后端立即返回，消息通过WebSocket推送）
-    await apiClient.continueChat(chat.id);
+    // 调用继续API
+    const result = await apiClient.continueChat(chat.id);
 
-    // 注意：loading消息会在收到WebSocket消息时被移除
-    // 这里不需要立即移除，让用户看到"正在思考"的提示
+    // 移除loading消息
+    chat.messages = chat.messages.filter(m => !m.isLoading);
+
+    // 添加AI响应（只添加新消息）
+    const existingIds = new Set(chat.messages.map(m => m.id));
+
+    if (result.messages && result.messages.length > 0) {
+      for (const msg of result.messages) {
+        const msgId = msg.message_id || msg.id;
+        // 只添加不存在的消息，跳过用户消息和loading消息
+        if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+          continue;
+        }
+        chat.messages.push({
+          id: msgId,
+          authorId: msg.author_id,
+          author_name: msg.author_name,
+          text: msg.content,
+          content: msg.content,
+          time: msg.timestamp,
+          role: msg.role
+        });
+        existingIds.add(msgId);
+      }
+    }
+
+    chat.updatedAt = result.updated_at || stamp();
+    scrollToBottom();
+
     // 智能体发言完毕，等待用户决定
     waitingForUser.value = true;
 

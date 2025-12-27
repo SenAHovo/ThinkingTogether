@@ -627,7 +627,10 @@ async function confirmRejectChat() {
     rejectReason.value = '';
     alert('✅ 已驳回该对话');
 
-    // 返回列表并刷新
+    // 重新加载公开对话列表数据
+    await refreshPublicChats();
+
+    // 返回列表
     backToList();
   } catch (err) {
     console.error('驳回失败:', err);

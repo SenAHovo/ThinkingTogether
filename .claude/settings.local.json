@@ -22,7 +22,8 @@
       "Bash(pip install:*)",
       "Bash(npm run build:*)",
       "Bash(cat:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(copy:*)"
     ],
     "deny": [],
     "ask": []

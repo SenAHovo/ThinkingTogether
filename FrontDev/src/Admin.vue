@@ -194,11 +194,11 @@
               <button class="detail-btn" @click="openDetailModal(request)">
                 查看详情
               </button>
-              <button v-if="request.status === 'pending'" class="reject-btn" @click="openRejectModal(request)">
-                驳回
-              </button>
               <button v-if="request.status === 'pending'" class="approve-btn" @click="approveRequest(request)">
                 通过
+              </button>
+              <button v-if="request.status === 'pending' || request.status === 'published' || request.status === 'approved'" class="reject-btn" @click="openRejectModal(request)">
+                驳回
               </button>
             </div>
           </div>
@@ -1425,11 +1425,19 @@ async function confirmReject() {
       method: 'POST',
       body: JSON.stringify({ approved: false, reason: rejectReason.value })
     });
-    // 重新加载列表以获取最新状态
-    await loadRequests();
+
     showRejectModal.value = false;
     rejectReason.value = '';
     alert('✅ 已驳回');
+
+    // 根据当前所在页面重新加载数据
+    if (activeTab.value === 'dashboard') {
+      // 如果在数据看板，重新加载热门公开对话
+      await loadTopPublicChats();
+    } else {
+      // 如果在公开对话管理，重新加载请求列表
+      await loadRequests();
+    }
   } catch (err) {
     console.error('驳回失败:', err);
     alert('驳回失败: ' + err.message);
