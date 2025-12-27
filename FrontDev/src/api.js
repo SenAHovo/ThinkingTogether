@@ -391,6 +391,22 @@ class ApiClient {
   }
 
   /**
+   * 获取数据看板统计数据
+   * GET /api/admin/dashboard-stats
+   */
+  async getDashboardStats() {
+    return this.request('/admin/dashboard-stats');
+  }
+
+  /**
+   * 获取点赞最高的公开对话
+   * GET /api/admin/top-public-chats
+   */
+  async getTopPublicChats(limit = 3) {
+    return this.request(`/admin/top-public-chats?limit=${limit}`);
+  }
+
+  /**
    * 获取公开对话大厅（按点赞排序）
    * GET /api/public/chats
    */
@@ -404,6 +420,17 @@ class ApiClient {
    */
   async getThreadComments(threadId) {
     return this.request(`/public/chats/${threadId}/comments`);
+  }
+
+  /**
+   * 检测评论是否包含违禁词
+   * POST /api/comments/check-violation
+   */
+  async checkViolation(content) {
+    return this.request('/comments/check-violation', {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    });
   }
 
   /**
@@ -433,6 +460,127 @@ class ApiClient {
    */
   async unlikeChat(chatId) {
     return this.request(`/chats/${chatId}/like`, {
+      method: 'DELETE',
+    });
+  }
+
+  // ========== 评论管理 API ==========
+
+  /**
+   * 获取评论列表（管理员）
+   * GET /api/admin/comments
+   */
+  async getAdminComments(params = {}) {
+    const { status, threadId, userId, keyword, page = 1, pageSize = 20 } = params;
+    const queryParams = new URLSearchParams();
+    if (status) queryParams.append('status', status);
+    if (threadId) queryParams.append('thread_id', threadId);
+    if (userId) queryParams.append('user_id', userId);
+    if (keyword) queryParams.append('keyword', keyword);
+    queryParams.append('page', page);
+    queryParams.append('page_size', pageSize);
+
+    return this.request(`/admin/comments?${queryParams.toString()}`);
+  }
+
+  /**
+   * 删除评论（自动判断使用管理员或普通用户接口）
+   * DELETE /api/admin/comments/{commentId} (管理员)
+   * DELETE /api/comments/{commentId} (普通用户)
+   */
+  async deleteComment(commentId, reason = '') {
+    const user = getUser();
+    const isAdmin = user && (user.role === 'admin' || user.role === 'super_admin');
+
+    // 管理员使用管理员接口，普通用户使用普通接口
+    const endpoint = isAdmin ? `/admin/comments/${commentId}` : `/comments/${commentId}`;
+
+    return this.request(endpoint, {
+      method: 'DELETE',
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  /**
+   * 恢复评论（管理员）
+   * PUT /api/admin/comments/{commentId}/restore
+   */
+  async restoreComment(commentId) {
+    return this.request(`/admin/comments/${commentId}/restore`, {
+      method: 'PUT',
+    });
+  }
+
+  /**
+   * 批量操作评论
+   * POST /api/admin/comments/batch
+   */
+  async batchCommentsAction(commentIds, action) {
+    return this.request('/admin/comments/batch', {
+      method: 'POST',
+      body: JSON.stringify({ comment_ids: commentIds, action }),
+    });
+  }
+
+  /**
+   * 获取评论统计
+   * GET /api/admin/comments/stats
+   */
+  async getCommentsStats() {
+    return this.request('/admin/comments/stats');
+  }
+
+  // ========== 违禁词管理 API ==========
+
+  /**
+   * 获取违禁词列表（无分页）
+   * GET /api/admin/banned-words
+   */
+  async getBannedWords(params = {}) {
+    const { keyword, category, severity, isActive } = params;
+    const queryParams = new URLSearchParams();
+    if (keyword) queryParams.append('keyword', keyword);
+    if (category) queryParams.append('category', category);
+    if (severity !== undefined && severity !== '') queryParams.append('severity', severity);
+    if (isActive !== undefined && isActive !== '') queryParams.append('is_active', isActive);
+
+    const queryString = queryParams.toString();
+    const url = `/admin/banned-words${queryString ? '?' + queryString : ''}`;
+
+    console.log('[API] 获取违禁词列表:', url);
+    const result = await this.request(url);
+    console.log('[API] 违禁词列表返回:', result);
+    return result;
+  }
+
+  /**
+   * 添加违禁词
+   * POST /api/admin/banned-words
+   */
+  async createBannedWord(word, category = '其他', severity = 1) {
+    return this.request('/admin/banned-words', {
+      method: 'POST',
+      body: JSON.stringify({ word, category, severity }),
+    });
+  }
+
+  /**
+   * 更新违禁词
+   * PUT /api/admin/banned-words/{wordId}
+   */
+  async updateBannedWord(wordId, data) {
+    return this.request(`/admin/banned-words/${wordId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * 删除违禁词
+   * DELETE /api/admin/banned-words/{wordId}
+   */
+  async deleteBannedWord(wordId) {
+    return this.request(`/admin/banned-words/${wordId}`, {
       method: 'DELETE',
     });
   }

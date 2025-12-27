@@ -211,18 +211,228 @@
 
       <!-- 评论管理 -->
       <div v-show="activeTab === 'comments'" class="tab-content">
-        <div class="comments-section">
-          <h2>评论管理</h2>
-          <p class="info-text">此功能将在后续版本中实现</p>
-          <div class="placeholder-box">
-            <div class="placeholder-icon">💬</div>
-            <p>评论区将包括：</p>
-            <ul class="feature-list">
-              <li>查看所有评论</li>
-              <li>设置违禁词</li>
-              <li>删除违规评论</li>
-              <li>评论审核</li>
-            </ul>
+        <div class="comments-wrapper">
+          <!-- 子标签切换 -->
+          <div class="sub-tabs">
+            <button
+              class="sub-tab"
+              :class="{ active: commentSubTab === 'content' }"
+              @click="commentSubTab = 'content'"
+            >
+              评论内容管理
+            </button>
+            <button
+              class="sub-tab"
+              :class="{ active: commentSubTab === 'banned' }"
+              @click="commentSubTab = 'banned'"
+            >
+              违禁词管理
+            </button>
+          </div>
+
+          <!-- 评论内容管理 -->
+          <div v-show="commentSubTab === 'content'" class="sub-tab-content">
+            <!-- 统计卡片 -->
+            <div class="stats-cards">
+              <div class="stat-card-small">
+                <div class="stat-value">{{ commentStats.total }}</div>
+                <div class="stat-label">总评论数</div>
+              </div>
+              <div class="stat-card-small">
+                <div class="stat-value normal">{{ commentStats.normal }}</div>
+                <div class="stat-label">正常评论</div>
+              </div>
+              <div class="stat-card-small">
+                <div class="stat-value deleted">{{ commentStats.deleted }}</div>
+                <div class="stat-label">已删除</div>
+              </div>
+            </div>
+
+            <!-- 筛选栏 -->
+            <div class="filter-bar">
+              <select v-model="commentFilter.status" @change="loadAdminComments" class="filter-select">
+                <option value="">全部状态</option>
+                <option value="normal">正常</option>
+                <option value="deleted">已删除</option>
+                <option value="violation">违规</option>
+              </select>
+              <input
+                v-model="commentFilter.keyword"
+                @keyup.enter="loadAdminComments"
+                type="text"
+                class="filter-input"
+                placeholder="搜索评论内容..."
+              />
+              <button class="filter-btn" @click="loadAdminComments">搜索</button>
+            </div>
+
+            <!-- 评论列表 -->
+            <div v-if="commentLoading" class="loading-state">加载中...</div>
+            <div v-else-if="comments.length === 0" class="empty-state">暂无评论数据</div>
+            <div v-else class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>对话主题</th>
+                    <th>评论内容</th>
+                    <th>用户</th>
+                    <th>状态</th>
+                    <th>时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="comment in comments" :key="comment.comment_id">
+                    <td class="thread-topic">{{ truncate(comment.thread_topic, 30) }}</td>
+                    <td class="comment-content">{{ truncate(comment.content, 50) }}</td>
+                    <td>{{ comment.username || '未知用户' }}</td>
+                    <td>
+                      <span class="status-badge" :class="getStatusClass(comment)">
+                        {{ getCommentStatusText(comment) }}
+                      </span>
+                    </td>
+                    <td>{{ formatDate(comment.created_at) }}</td>
+                    <td>
+                      <div class="action-buttons">
+                        <button
+                          class="action-btn view"
+                          @click="viewCommentDetail(comment)"
+                          title="查看详情"
+                        >
+                          详情
+                        </button>
+                        <button
+                          v-if="!comment.is_deleted"
+                          class="action-btn delete"
+                          @click="confirmDeleteComment(comment)"
+                          title="删除评论"
+                        >
+                          删除
+                        </button>
+                        <button
+                          v-if="comment.is_deleted"
+                          class="action-btn restore"
+                          @click="restoreComment(comment.comment_id)"
+                          title="恢复评论"
+                        >
+                          恢复
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <!-- 分页 -->
+            <div v-if="commentPagination.totalPages > 1" class="pagination">
+              <button
+                :disabled="commentPagination.page === 1"
+                @click="commentPagination.page-- && loadAdminComments()"
+                class="page-btn"
+              >
+                上一页
+              </button>
+              <span class="page-info">
+                第 {{ commentPagination.page }} / {{ commentPagination.totalPages }} 页
+              </span>
+              <button
+                :disabled="commentPagination.page === commentPagination.totalPages"
+                @click="commentPagination.page++ && loadAdminComments()"
+                class="page-btn"
+              >
+                下一页
+              </button>
+            </div>
+          </div>
+
+          <!-- 违禁词管理 -->
+          <div v-show="commentSubTab === 'banned'" class="sub-tab-content">
+            <!-- 操作栏 -->
+            <div class="actions-bar">
+              <button class="primary-btn" @click="openAddBannedWordModal">
+                + 添加违禁词
+              </button>
+            </div>
+
+            <!-- 筛选栏 -->
+            <div class="filter-bar">
+              <input
+                v-model="bannedWordFilter.keyword"
+                @keyup.enter="loadBannedWords"
+                type="text"
+                class="filter-input"
+                placeholder="搜索违禁词..."
+              />
+              <select v-model="bannedWordFilter.category" @change="loadBannedWords" class="filter-select">
+                <option value="">全部分类</option>
+                <option value="政治">政治</option>
+                <option value="色情">色情</option>
+                <option value="暴力">暴力</option>
+                <option value="广告">广告</option>
+                <option value="其他">其他</option>
+              </select>
+              <select v-model="bannedWordFilter.severity" @change="loadBannedWords" class="filter-select">
+                <option value="">全部程度</option>
+                <option value="1">轻微</option>
+                <option value="2">中等</option>
+                <option value="3">严重</option>
+              </select>
+              <button class="filter-btn" @click="loadBannedWords">搜索</button>
+            </div>
+
+            <!-- 违禁词列表 -->
+            <div v-if="bannedWordLoading" class="loading-state">加载中...</div>
+            <div v-else-if="bannedWords.length === 0" class="empty-state">暂无违禁词</div>
+            <div v-else class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>违禁词</th>
+                    <th>分类</th>
+                    <th>严重程度</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="word in bannedWords" :key="word.word_id">
+                    <td class="banned-word">{{ word.word }}</td>
+                    <td>{{ word.category }}</td>
+                    <td>
+                      <span class="severity-badge" :class="'severity-' + word.severity">
+                        {{ getSeverityText(word.severity) }}
+                      </span>
+                    </td>
+                    <td>
+                      <span class="status-badge" :class="{ active: word.is_active }">
+                        {{ word.is_active ? '启用' : '禁用' }}
+                      </span>
+                    </td>
+                    <td>{{ formatDate(word.created_at) }}</td>
+                    <td>
+                      <div class="action-buttons">
+                        <button
+                          class="action-btn edit"
+                          @click="editBannedWord(word)"
+                          title="编辑"
+                        >
+                          编辑
+                        </button>
+                        <button
+                          class="action-btn delete"
+                          @click="confirmDeleteBannedWord(word)"
+                          title="删除"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       </div>
@@ -244,6 +454,36 @@
             <div class="stat-card">
               <div class="stat-number">{{ stats.threadCount }}</div>
               <div class="stat-label">总对话数量</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.commentCount }}</div>
+              <div class="stat-label">评论总数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.activeUsersToday }}</div>
+              <div class="stat-label">今日活跃用户</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.publicChatCount }}</div>
+              <div class="stat-label">公开对话总数</div>
+            </div>
+          </div>
+
+          <!-- 热门公开对话 -->
+          <div v-if="topPublicChats.length > 0" class="top-chats-section">
+            <h3>热门公开对话（按点赞排序）</h3>
+            <div class="top-chats-list">
+              <div v-for="chat in topPublicChats" :key="chat.id" class="top-chat-item">
+                <div class="chat-title" :title="chat.title">{{ truncateTitle(chat.title, 60) }}</div>
+                <div class="chat-meta">
+                  <span>作者: {{ chat.username || '匿名' }}</span>
+                  <span>点赞: {{ chat.like_count || 0 }}</span>
+                </div>
+                <div class="chat-actions">
+                  <button class="action-btn view" @click="viewPublicChatDetail(chat)">查看详情</button>
+                  <button v-if="chat.publication_status === 'published'" class="action-btn reject" @click="rejectPublicChat(chat)">驳回</button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -307,6 +547,48 @@
         <div class="modal-footer">
           <button class="secondary-btn" @click="showRejectModal = false">取消</button>
           <button class="danger-btn" @click="confirmReject">确认驳回</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 热门对话详情弹窗 -->
+    <div v-if="showTopChatDetailModal" class="modal-overlay" @click.self="closeTopChatDetail">
+      <div class="modal large">
+        <div class="modal-header">
+          <h3>对话详情</h3>
+          <button class="close-btn" @click="closeTopChatDetail">×</button>
+        </div>
+        <div class="modal-body" v-if="currentTopChatDetail">
+          <div class="chat-detail-content">
+            <div class="detail-row">
+              <span class="detail-label">标题:</span>
+              <span class="detail-value">{{ currentTopChatDetail.title }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">作者:</span>
+              <span class="detail-value">{{ currentTopChatDetail.username || '匿名' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">点赞数:</span>
+              <span class="detail-value">{{ currentTopChatDetail.like_count || 0 }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">状态:</span>
+              <span class="detail-value">{{ getStatusText(currentTopChatDetail.publication_status) }}</span>
+            </div>
+            <div class="detail-row full-width" v-if="currentTopChatDetail.messages_preview && currentTopChatDetail.messages_preview.length > 0">
+              <span class="detail-label">消息预览:</span>
+              <div class="messages-preview">
+                <div v-for="(msg, index) in currentTopChatDetail.messages_preview" :key="index" class="message-item">
+                  <span class="message-author">{{ msg.author_name }}:</span>
+                  <span class="message-content">{{ msg.content }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="primary-btn" @click="closeTopChatDetail">关闭</button>
         </div>
       </div>
     </div>
@@ -393,6 +675,169 @@
         </div>
       </div>
     </div>
+
+    <!-- 删除评论确认弹窗 -->
+    <div v-if="showDeleteCommentModal" class="modal-overlay" @click.self="showDeleteCommentModal = false">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3>删除评论</h3>
+          <button class="close-btn" @click="showDeleteCommentModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>删除原因（可选）：</label>
+            <textarea
+              v-model="deleteCommentReason"
+              class="form-textarea"
+              rows="3"
+              placeholder="请输入删除原因..."
+            ></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="showDeleteCommentModal = false">取消</button>
+          <button class="primary-btn danger" @click="executeDeleteComment">确认删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 查看评论详情弹窗 -->
+    <div v-if="showCommentDetailModal" class="modal-overlay" @click.self="showCommentDetailModal = false">
+      <div class="modal modal-small">
+        <div class="modal-header">
+          <h3>评论详情</h3>
+          <button class="close-btn" @click="showCommentDetailModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="currentCommentDetail" class="comment-detail-view">
+            <div class="detail-row">
+              <span class="detail-label">对话主题：</span>
+              <span class="detail-value">{{ currentCommentDetail.thread_topic }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">用户：</span>
+              <span class="detail-value">{{ currentCommentDetail.username }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">时间：</span>
+              <span class="detail-value">{{ formatDate(currentCommentDetail.created_at) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">状态：</span>
+              <span class="detail-value">
+                <span class="status-badge" :class="getStatusClass(currentCommentDetail)">
+                  {{ getStatusText(currentCommentDetail) }}
+                </span>
+              </span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">评论内容：</span>
+            </div>
+            <div class="comment-full-content">{{ currentCommentDetail.content }}</div>
+            <div v-if="currentCommentDetail.delete_reason" class="detail-row">
+              <span class="detail-label">删除原因：</span>
+              <span class="detail-value delete-reason">{{ currentCommentDetail.delete_reason }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="primary-btn" @click="showCommentDetailModal = false">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 添加违禁词弹窗 -->
+    <div v-if="showAddBannedWordModal" class="modal-overlay" @click.self="showAddBannedWordModal = false">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>添加违禁词</h3>
+          <button class="close-btn" @click="showAddBannedWordModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>违禁词 <span class="required">*</span>：</label>
+            <input
+              v-model="bannedWordForm.word"
+              type="text"
+              class="form-input"
+              placeholder="请输入违禁词"
+            />
+          </div>
+          <div class="form-group">
+            <label>分类：</label>
+            <select v-model="bannedWordForm.category" class="form-select">
+              <option value="政治">政治</option>
+              <option value="色情">色情</option>
+              <option value="暴力">暴力</option>
+              <option value="广告">广告</option>
+              <option value="其他">其他</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>严重程度：</label>
+            <select v-model.number="bannedWordForm.severity" class="form-select">
+              <option :value="1">轻微</option>
+              <option :value="2">中等</option>
+              <option :value="3">严重</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="showAddBannedWordModal = false">取消</button>
+          <button class="primary-btn" @click="addBannedWord">添加</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 编辑违禁词弹窗 -->
+    <div v-if="showEditBannedWordModal" class="modal-overlay" @click.self="showEditBannedWordModal = false">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>编辑违禁词</h3>
+          <button class="close-btn" @click="showEditBannedWordModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>违禁词 <span class="required">*</span>：</label>
+            <input
+              v-model="bannedWordForm.word"
+              type="text"
+              class="form-input"
+              placeholder="请输入违禁词"
+            />
+          </div>
+          <div class="form-group">
+            <label>分类：</label>
+            <select v-model="bannedWordForm.category" class="form-select">
+              <option value="政治">政治</option>
+              <option value="色情">色情</option>
+              <option value="暴力">暴力</option>
+              <option value="广告">广告</option>
+              <option value="其他">其他</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>严重程度：</label>
+            <select v-model.number="bannedWordForm.severity" class="form-select">
+              <option :value="1">轻微</option>
+              <option :value="2">中等</option>
+              <option :value="3">严重</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>状态：</label>
+            <label class="checkbox-label">
+              <input type="checkbox" v-model="bannedWordForm.is_active" />
+              启用
+            </label>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="showEditBannedWordModal = false">取消</button>
+          <button class="primary-btn" @click="updateBannedWord">保存</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -457,12 +902,62 @@ const rejectReason = ref('');
 const reviewingRequest = ref(null);
 const pendingCount = ref(0);
 
+// 热门对话详情弹窗
+const showTopChatDetailModal = ref(false);
+const currentTopChatDetail = ref(null);
+
 // 对话详情弹窗
 const showDetailModal = ref(false);
 const detailRequest = ref(null);
 
 // 已公开对话
 const publicChats = ref([]);
+
+// ========== 评论管理相关 ==========
+const commentSubTab = ref('content'); // 评论管理的子标签
+const commentLoading = ref(false);
+const comments = ref([]);
+const commentStats = ref({
+  total: 0,
+  normal: 0,
+  deleted: 0,
+  violation: 0,
+  today: 0,
+});
+const commentFilter = ref({
+  status: '',
+  keyword: '',
+});
+const commentPagination = ref({
+  page: 1,
+  pageSize: 20,
+  totalPages: 1,
+  total: 0,
+});
+const commentToDelete = ref(null);
+const showDeleteCommentModal = ref(false);
+const deleteCommentReason = ref('');
+const showCommentDetailModal = ref(false);
+const currentCommentDetail = ref(null);
+
+// ========== 违禁词管理相关 ==========
+const bannedWordLoading = ref(false);
+const bannedWords = ref([]);
+const bannedWordFilter = ref({
+  keyword: '',
+  category: '',
+  severity: '',
+});
+const showAddBannedWordModal = ref(false);
+const showEditBannedWordModal = ref(false);
+const editingBannedWord = ref(null);
+const bannedWordForm = ref({
+  word: '',
+  category: '其他',
+  severity: 1,
+  is_active: true,
+});
+const bannedWordToDelete = ref(null);
 
 // 数据看板
 const stats = ref({
@@ -472,7 +967,12 @@ const stats = ref({
   publishedCount: 0,
   violationCount: 0,
   commentCount: 0,
+  activeUsersToday: 0,
+  publicChatCount: 0,
 });
+
+// 热门公开对话
+const topPublicChats = ref([]);
 
 // 删除确认
 const showDeleteConfirm = ref(false);
@@ -926,6 +1426,57 @@ async function confirmReject() {
   }
 }
 
+// 查看公开对话详情
+async function viewPublicChatDetail(chat) {
+  try {
+    // 获取对话的完整消息
+    const result = await apiClient.getMessages(chat.id, 100);
+
+    currentTopChatDetail.value = {
+      ...chat,
+      messages_preview: result.messages || []
+    };
+    showTopChatDetailModal.value = true;
+  } catch (err) {
+    console.error('获取对话详情失败:', err);
+    // 如果获取消息失败，至少显示基本信息
+    currentTopChatDetail.value = {
+      ...chat,
+      messages_preview: []
+    };
+    showTopChatDetailModal.value = true;
+  }
+}
+
+// 关闭热门对话详情弹窗
+function closeTopChatDetail() {
+  showTopChatDetailModal.value = false;
+  currentTopChatDetail.value = null;
+}
+
+// 获取状态文本
+function getStatusText(status) {
+  const statusMap = {
+    'draft': '草稿',
+    'pending': '待审核',
+    'published': '已公开',
+    'rejected': '已驳回'
+  };
+  return statusMap[status] || status;
+}
+
+// 驳回公开对话
+function rejectPublicChat(chat) {
+  reviewingRequest.value = {
+    id: chat.id,
+    thread_id: chat.id,
+    title: chat.title,
+    username: chat.username
+  };
+  showRejectModal.value = true;
+  rejectReason.value = '';
+}
+
 // 测试公开对话数据
 function getMockPublicChats() {
   return [
@@ -941,12 +1492,246 @@ function loadPublicChats() {
 }
 
 // 加载数据看板统计
-function loadDashboardStats() {
-  // 计算统计数据
-  const allUsers = getMockUsers();
-  stats.value.userCount = allUsers.filter(u => u.role === 'user').length;
-  stats.value.adminCount = allUsers.filter(u => u.role === 'admin').length; // 不包括超级管理员
-  stats.value.threadCount = getMockRequests().length + getMockPublicChats().length;
+async function loadDashboardStats() {
+  try {
+    // 加载统计数据
+    const result = await apiClient.getDashboardStats();
+    stats.value = {
+      userCount: result.user_count || 0,
+      adminCount: result.admin_count || 0,
+      threadCount: result.thread_count || 0,
+      publishedCount: result.published_count || 0,
+      violationCount: result.violation_count || 0,
+      commentCount: result.comment_count || 0,
+      activeUsersToday: result.active_users_today || 0,
+      publicChatCount: result.public_chat_count || 0,
+    };
+
+    // 加载热门公开对话
+    await loadTopPublicChats();
+  } catch (err) {
+    console.error('加载统计数据失败:', err);
+  }
+}
+
+async function loadTopPublicChats() {
+  try {
+    const result = await apiClient.getTopPublicChats(3);
+    topPublicChats.value = result.chats || [];
+  } catch (err) {
+    console.error('加载热门对话失败:', err);
+  }
+}
+
+// ========== 评论管理相关方法 ==========
+
+// 加载评论统计数据
+async function loadCommentStats() {
+  try {
+    const result = await apiClient.getCommentsStats();
+    commentStats.value = result;
+  } catch (err) {
+    console.error('加载评论统计失败:', err);
+  }
+}
+
+// 加载评论列表
+async function loadAdminComments() {
+  commentLoading.value = true;
+  try {
+    const result = await apiClient.getAdminComments({
+      status: commentFilter.value.status,
+      keyword: commentFilter.value.keyword,
+      page: commentPagination.value.page,
+      pageSize: commentPagination.value.pageSize,
+    });
+    comments.value = result.comments;
+    commentPagination.value.totalPages = result.total_pages;
+    commentPagination.value.total = result.total;
+  } catch (err) {
+    console.error('加载评论列表失败:', err);
+  } finally {
+    commentLoading.value = false;
+  }
+}
+
+// 确认删除评论
+function confirmDeleteComment(comment) {
+  commentToDelete.value = comment;
+  showDeleteCommentModal.value = true;
+  deleteCommentReason.value = '';
+}
+
+// 执行删除评论
+async function executeDeleteComment() {
+  if (!commentToDelete.value) return;
+
+  try {
+    await apiClient.deleteComment(
+      commentToDelete.value.comment_id,
+      deleteCommentReason.value
+    );
+    showDeleteCommentModal.value = false;
+    commentToDelete.value = null;
+    deleteCommentReason.value = '';
+    // 重新加载评论列表和统计
+    await loadAdminComments();
+    await loadCommentStats();
+  } catch (err) {
+    console.error('删除评论失败:', err);
+    alert('删除失败: ' + err.message);
+  }
+}
+
+// 恢复评论
+async function restoreComment(commentId) {
+  if (!confirm('确认恢复这条评论吗？')) return;
+
+  try {
+    await apiClient.restoreComment(commentId);
+    // 重新加载评论列表和统计
+    await loadAdminComments();
+    await loadCommentStats();
+  } catch (err) {
+    console.error('恢复评论失败:', err);
+    alert('恢复失败: ' + err.message);
+  }
+}
+
+// 获取评论状态文本
+function getCommentStatusText(comment) {
+  if (comment.is_deleted) return '已删除';
+  if (comment.is_violation) return '违规';
+  return '正常';
+}
+
+// 获取状态样式类
+function getStatusClass(comment) {
+  if (comment.is_deleted) return 'deleted';
+  if (comment.is_violation) return 'violation';
+  return 'normal';
+}
+
+// ========== 违禁词管理相关方法 ==========
+
+// 加载违禁词列表
+async function loadBannedWords() {
+  console.log('[Admin] loadBannedWords called');
+  bannedWordLoading.value = true;
+  try {
+    const result = await apiClient.getBannedWords({
+      keyword: bannedWordFilter.value.keyword,
+      category: bannedWordFilter.value.category,
+      severity: bannedWordFilter.value.severity,
+    });
+    console.log('[Admin] loadBannedWords result:', result);
+    bannedWords.value = result.words || [];
+    console.log('[Admin] bannedWords.value:', bannedWords.value);
+  } catch (err) {
+    console.error('[Admin] 加载违禁词列表失败:', err);
+  } finally {
+    bannedWordLoading.value = false;
+  }
+}
+
+// 打开添加违禁词弹窗
+function openAddBannedWordModal() {
+  // 清空之前输入的内容
+  bannedWordForm.value = {
+    word: '',
+    category: '其他',
+    severity: 1,
+    is_active: true,
+  };
+  showAddBannedWordModal.value = true;
+}
+
+// 查看评论详情
+function viewCommentDetail(comment) {
+  currentCommentDetail.value = comment;
+  showCommentDetailModal.value = true;
+}
+
+// 添加违禁词
+async function addBannedWord() {
+  if (!bannedWordForm.value.word.trim()) {
+    alert('请输入违禁词');
+    return;
+  }
+
+  try {
+    await apiClient.createBannedWord(
+      bannedWordForm.value.word,
+      bannedWordForm.value.category,
+      bannedWordForm.value.severity
+    );
+    showAddBannedWordModal.value = false;
+    // 重新加载列表
+    await loadBannedWords();
+  } catch (err) {
+    console.error('添加违禁词失败:', err);
+    alert('添加失败: ' + err.message);
+  }
+}
+
+// 编辑违禁词
+function editBannedWord(word) {
+  editingBannedWord.value = word;
+  bannedWordForm.value = {
+    word: word.word,
+    category: word.category,
+    severity: word.severity,
+    is_active: word.is_active,
+  };
+  showEditBannedWordModal.value = true;
+}
+
+// 更新违禁词
+async function updateBannedWord() {
+  if (!editingBannedWord.value) return;
+
+  try {
+    await apiClient.updateBannedWord(editingBannedWord.value.word_id, bannedWordForm.value);
+    showEditBannedWordModal.value = false;
+    editingBannedWord.value = null;
+    // 重新加载列表
+    await loadBannedWords();
+  } catch (err) {
+    console.error('更新违禁词失败:', err);
+    alert('更新失败: ' + err.message);
+  }
+}
+
+// 确认删除违禁词
+function confirmDeleteBannedWord(word) {
+  if (!confirm(`确认删除违禁词"${word.word}"吗？`)) return;
+
+  deleteBannedWord(word);
+}
+
+// 删除违禁词
+async function deleteBannedWord(word) {
+  try {
+    await apiClient.deleteBannedWord(word.word_id);
+    // 重新加载列表
+    await loadBannedWords();
+  } catch (err) {
+    console.error('删除违禁词失败:', err);
+    alert('删除失败: ' + err.message);
+  }
+}
+
+// 获取严重程度文本
+function getSeverityText(severity) {
+  const map = { 1: '轻微', 2: '中等', 3: '严重' };
+  return map[severity] || '未知';
+}
+
+// 截断文本
+function truncate(text, maxLength) {
+  if (!text) return '';
+  if (text.length <= maxLength) return text;
+  return text.substring(0, maxLength) + '...';
 }
 
 // 初始化加载
@@ -958,6 +1743,10 @@ onMounted(() => {
   loadRequests();
   loadPublicChats();
   loadDashboardStats();
+  // 加载评论管理和违禁词管理数据
+  loadCommentStats();
+  loadAdminComments();
+  loadBannedWords();
 });
 </script>
 
@@ -1392,6 +2181,135 @@ onMounted(() => {
   color: var(--muted);
 }
 
+/* 热门对话板块 */
+.top-chats-section {
+  margin-top: 32px;
+  padding: 24px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  width: 100%;
+  max-width: 100%;
+}
+
+.top-chats-section h3 {
+  margin: 0 0 20px 0;
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text);
+  text-align: center;
+}
+
+.top-chats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+/* 热门对话列表 - 上下布局 */
+.top-chats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.top-chat-item {
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05);
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  transition: all 0.3s ease;
+}
+
+.top-chat-item:hover {
+  border-color: rgba(106, 167, 255, 0.3);
+  background: rgba(255,255,255,.08);
+}
+
+.top-chat-card {
+  padding: 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: all 0.3s ease;
+}
+
+.top-chat-card:hover {
+  border-color: rgba(106, 167, 255, 0.3);
+  background: rgba(255,255,255,.08);
+  transform: translateY(-2px);
+}
+
+.chat-title {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.chat-meta {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.chat-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn {
+  flex: 1;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.action-btn.view {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: #ffffff;
+}
+
+.action-btn.view:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+}
+
+.action-btn.reject {
+  background: rgba(255, 87, 87, 0.15);
+  border: 1px solid rgba(255, 87, 87, 0.3);
+  color: #ff5757;
+}
+
+.action-btn.reject:hover {
+  background: rgba(255, 87, 87, 0.25);
+  border-color: rgba(255, 87, 87, 0.5);
+}
+
 /* 标签布局 - 根据数量调整 */
 .tabs.three-tabs {
   display: grid;
@@ -1648,6 +2566,64 @@ onMounted(() => {
   font-size: 14px;
   color: var(--text);
   line-height: 1.6;
+}
+
+/* 热门对话详情弹窗样式 */
+.chat-detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.detail-row.full-width {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-row .detail-label {
+  min-width: 80px;
+  flex-shrink: 0;
+}
+
+.messages-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 12px;
+  background: rgba(255,255,255,.03);
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.08);
+}
+
+.message-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.02);
+}
+
+.message-author {
+  font-size: 13px;
+  font-weight: 600;
+  color: #6aa7ff;
+}
+
+.message-content {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .chat-full-preview {
@@ -2262,5 +3238,566 @@ onMounted(() => {
   white-space: pre-wrap !important;
   text-overflow: clip !important;
   overflow: visible !important;
+}
+
+/* ========== 评论管理和违禁词管理样式 ========== */
+
+/* 子标签 */
+.sub-tabs {
+  display: flex;
+  align-items: center;
+  padding: 0 24px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sub-tab {
+  padding: 10px 18px;
+  border-radius: 12px 12px 0 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  position: relative;
+  bottom: -1px;
+  flex: 1;
+  text-align: center;
+}
+
+.sub-tab:hover {
+  color: var(--text);
+  background: rgba(255,255,255,.04);
+}
+
+.sub-tab.active {
+  color: var(--text);
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.30);
+  border-bottom-color: transparent;
+}
+
+.sub-tab-content {
+  display: block;
+}
+
+/* 统计卡片 */
+.stats-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.stat-card-small {
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 800;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.stat-value.normal {
+  color: #4ade80;
+}
+
+.stat-value.deleted {
+  color: #ff6b6b;
+}
+
+.stat-value.violation {
+  color: #fbbf24;
+}
+
+.stat-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* 筛选栏 */
+.filter-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.filter-input {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  outline: none;
+  flex: 1;
+  min-width: 200px;
+}
+
+.filter-input:focus {
+  border-color: rgba(106,167,255,.40);
+  background: rgba(106,167,255,.08);
+}
+
+.filter-select {
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  outline: none;
+  cursor: pointer;
+}
+
+.filter-btn {
+  padding: 10px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(106,167,255,.25);
+  background: rgba(106,167,255,.18);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.filter-btn:hover {
+  filter: brightness(1.1);
+  border-color: rgba(106,167,255,.45);
+}
+
+/* 表格 */
+.table-wrapper {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: 500px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+}
+
+/* 滚动条样式 */
+.table-wrapper::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.table-wrapper::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.table-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+}
+
+.table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.data-table th {
+  padding: 14px 16px;
+  text-align: left;
+  border-bottom: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.03);
+  color: var(--muted);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.data-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.data-table tbody tr:hover {
+  background: rgba(255,255,255,.03);
+}
+
+.thread-topic {
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comment-content {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.banned-word {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+/* 状态徽章 */
+.status-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.status-badge.normal {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.status-badge.deleted {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+}
+
+.status-badge.violation {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+.status-badge.active {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.status-badge:not(.active) {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--muted);
+}
+
+/* 严重程度徽章 */
+.severity-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.severity-badge.severity-1 {
+  background: rgba(74, 222, 128, 0.15);
+  color: #4ade80;
+}
+
+.severity-badge.severity-2 {
+  background: rgba(251, 191, 36, 0.15);
+  color: #fbbf24;
+}
+
+.severity-badge.severity-3 {
+  background: rgba(255, 107, 107, 0.15);
+  color: #ff6b6b;
+}
+
+/* 操作按钮 */
+.action-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.action-btn {
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.action-btn:hover {
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.20);
+}
+
+.action-btn.delete {
+  border-color: rgba(255,107,107,.30);
+  background: rgba(255,107,107,.1);
+  color: #ff6b6b;
+}
+
+.action-btn.delete:hover {
+  background: rgba(255,107,107,.2);
+  border-color: rgba(255,107,107,.50);
+}
+
+.action-btn.restore {
+  border-color: rgba(74,222,128,.30);
+  background: rgba(74,222,128,.1);
+  color: #4ade80;
+}
+
+.action-btn.restore:hover {
+  background: rgba(74,222,128,.2);
+  border-color: rgba(74,222,128,.50);
+}
+
+.action-btn.edit {
+  border-color: rgba(106,167,255,.30);
+  background: rgba(106,167,255,.1);
+  color: #6aa7ff;
+}
+
+.action-btn.edit:hover {
+  background: rgba(106,167,255,.2);
+  border-color: rgba(106,167,255,.50);
+}
+
+/* 分页 */
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.page-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.page-btn:hover:not(:disabled) {
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.30);
+}
+
+.page-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-info {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* 加载和空状态 */
+.loading-state,
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* 操作栏 */
+.actions-bar {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+/* 表单样式 */
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.required {
+  color: #ff6b6b;
+}
+
+.form-input,
+.form-select,
+.form-textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+}
+
+.form-input:focus,
+.form-select:focus,
+.form-textarea:focus {
+  border-color: rgba(106,167,255,.40);
+  background: rgba(106,167,255,.08);
+}
+
+.form-textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-family: inherit;
+}
+
+.checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.checkbox-label input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.comment-preview {
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.05);
+  margin-bottom: 16px;
+}
+
+.comment-preview p {
+  margin: 4px 0;
+  color: var(--text);
+}
+
+/* 评论详情样式 */
+.comment-detail-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.detail-label {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 80px;
+}
+
+.detail-value {
+  color: var(--text);
+  font-size: 14px;
+  word-break: break-word;
+  flex: 1;
+}
+
+.detail-value.delete-reason {
+  color: #ff6b6b;
+}
+
+.comment-full-content {
+  padding: 16px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  line-height: 1.8;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* 小尺寸弹窗 */
+.modal-small {
+  max-width: 400px;
+}
+
+/* 查看按钮样式 */
+.action-btn.view {
+  border-color: rgba(106,167,255,.30);
+  background: rgba(106,167,255,.1);
+  color: #6aa7ff;
+}
+
+.action-btn.view:hover {
+  background: rgba(106,167,255,.2);
+  border-color: rgba(106,167,255,.50);
+}
+
+/* 浅色模式适配 */
+:root[data-theme="light"] .stat-card-small {
+  background: linear-gradient(135deg, #f0f4ff 0%, #ffffff 100%);
+  border-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .filter-input,
+:root[data-theme="light"] .filter-select {
+  background: #ffffff;
+  border-color: #bdbdbd;
+  color: #000000;
+}
+
+:root[data-theme="light"] .data-table th {
+  background: #f5f5f5;
+  border-bottom-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .data-table td {
+  border-bottom-color: #eeeeee;
+}
+
+:root[data-theme="light"] .data-table tbody tr:hover {
+  background: #f9f9f9;
+}
+
+/* 浅色模式滚动条 */
+:root[data-theme="light"] .table-wrapper::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .table-wrapper::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="light"] .table-wrapper::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+:root[data-theme="light"] .action-btn {
+  background: #ffffff;
+  border-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .comment-preview {
+  background: #f5f5f5;
+}
+
+:root[data-theme="light"] .form-input,
+:root[data-theme="light"] .form-select,
+:root[data-theme="light"] .form-textarea {
+  background: #ffffff;
+  border-color: #bdbdbd;
+  color: #000000;
 }
 </style>

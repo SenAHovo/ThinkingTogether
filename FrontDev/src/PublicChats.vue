@@ -55,6 +55,14 @@
           >
             {{ currentChat?.is_liked ? '❤️ 已点赞' : '🤍 点赞' }} ({{ currentChat?.like_count || 0 }})
           </button>
+          <button
+            v-if="isAdmin && currentChat?.publication_status === 'published'"
+            class="action-btn reject-btn"
+            @click="rejectPublicChat"
+            title="驳回此对话"
+          >
+            ❌ 驳回
+          </button>
         </div>
       </header>
 
@@ -95,10 +103,10 @@
             />
             <button
               class="submit-comment-btn"
-              :disabled="!newComment.trim() || submittingComment"
+              :disabled="!newComment.trim() || submittingComment || checkingViolation"
               @click="submitComment"
             >
-              发表评论
+              {{ checkingViolation ? '检测中...' : (submittingComment ? '发表中...' : '发表评论') }}
             </button>
           </div>
           <div v-else class="login-hint">
@@ -112,10 +120,123 @@
               <div class="comment-header">
                 <span class="comment-author">{{ comment.username }}</span>
                 <span class="comment-time">{{ formatDate(comment.created_at) }}</span>
+                <!-- 用户自己的删除按钮 -->
+                <button
+                  v-if="isCommentOwner(comment) && !comment.is_deleted"
+                  class="comment-action-btn user-delete"
+                  @click="confirmDeleteComment(comment)"
+                  title="删除我的评论"
+                >
+                  🗑️ 删除
+                </button>
+                <!-- 管理员删除按钮 -->
+                <button
+                  v-if="isAdmin && !isCommentOwner(comment) && !comment.is_deleted"
+                  class="comment-action-btn delete"
+                  @click="confirmDeleteComment(comment)"
+                  title="删除评论"
+                >
+                  🗑️ 删除
+                </button>
+                <!-- 管理员恢复按钮 -->
+                <button
+                  v-if="isAdmin && comment.is_deleted"
+                  class="comment-action-btn restore"
+                  @click="restoreComment(comment.comment_id)"
+                  title="恢复评论"
+                >
+                  ♻️ 恢复
+                </button>
               </div>
-              <div class="comment-content">{{ comment.content }}</div>
+              <div v-if="comment.is_deleted" class="comment-content deleted">
+                该评论已被管理员删除
+                <span v-if="comment.delete_reason" class="delete-reason">
+                  （原因：{{ comment.delete_reason }}）
+                </span>
+              </div>
+              <div v-else class="comment-content">{{ comment.content }}</div>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 删除评论确认弹窗 -->
+    <div v-if="showDeleteConfirm" class="modal-overlay" @click.self="showDeleteConfirm = false">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>删除评论</h3>
+          <button class="close-btn" @click="showDeleteConfirm = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="commentToDelete" class="comment-preview">
+            <p><strong>评论内容：</strong></p>
+            <p>{{ commentToDelete.content }}</p>
+          </div>
+          <div class="form-group">
+            <label>删除原因（可选）：</label>
+            <textarea
+              v-model="deleteReason"
+              class="form-textarea"
+              rows="3"
+              placeholder="请输入删除原因..."
+            ></textarea>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="showDeleteConfirm = false">取消</button>
+          <button class="primary-btn danger" @click="executeDeleteComment">确认删除</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 违规词提示弹窗 -->
+    <div v-if="showViolationModal && violationResult" class="modal-overlay" @click.self="closeViolationModal">
+      <div class="modal violation-modal">
+        <div class="modal-header">
+          <h3>⚠️ 检测到违规内容</h3>
+          <button class="close-btn" @click="closeViolationModal">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="violation-message">您的评论包含以下违规词，请修改后重试：</p>
+
+          <div class="violation-content-preview">
+            <div v-html="getHighlightedContent(newComment, violationResult.violations)"></div>
+          </div>
+
+          <div class="violation-list">
+            <h4>违规详情：</h4>
+            <div v-for="(v, index) in violationResult.violations" :key="index" class="violation-item">
+              <span class="violation-word">"{{ v.word }}"</span>
+              <span class="violation-info">（分类：{{ v.category }}，位置：第{{ v.start + 1 }}-{{ v.end }}字）</span>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="primary-btn" @click="closeViolationModal">我知道了，去修改</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 驳回对话确认模态框 -->
+    <div v-if="showRejectModal" class="modal-overlay" @click.self="cancelRejectChat">
+      <div class="modal">
+        <div class="modal-header">
+          <h3>驳回对话</h3>
+        </div>
+        <div class="modal-body">
+          <p>确认要驳回对话《{{ currentChat?.title }}》吗？</p>
+          <p class="hint-text">驳回后，该对话将从公开对话大厅移除。</p>
+          <textarea
+            v-model="rejectReason"
+            class="reason-textarea"
+            placeholder="请输入驳回原因（可选）"
+            rows="3"
+          ></textarea>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="cancelRejectChat">取消</button>
+          <button class="danger-btn" @click="confirmRejectChat">确认驳回</button>
         </div>
       </div>
     </div>
@@ -145,6 +266,34 @@ const comments = ref([]);
 const newComment = ref('');
 const submittingComment = ref(false);
 const dataLoaded = ref(false); // 标记数据是否已加载
+
+// 评论删除相关
+const commentToDelete = ref(null);
+const showDeleteConfirm = ref(false);
+const deleteReason = ref('');
+
+// 违规词检测相关
+const checkingViolation = ref(false);
+const showViolationModal = ref(false);
+const violationResult = ref(null);
+
+// ========== 计算属性 ==========
+
+// 判断当前用户是否为管理员
+const isAdmin = computed(() => {
+  return props.currentUser &&
+    (props.currentUser.role === 'admin' || props.currentUser.role === 'super_admin');
+});
+
+// 驳回相关状态
+const showRejectModal = ref(false);
+const rejectReason = ref('');
+
+// 判断当前用户是否为评论作者
+function isCommentOwner(comment) {
+  if (!props.currentUser || !comment) return false;
+  return comment.user_id === props.currentUser.user_id;
+}
 
 // ========== 工具函数 ==========
 
@@ -323,23 +472,172 @@ async function toggleLike() {
  * 发表评论
  */
 async function submitComment() {
-  if (!newComment.value.trim() || submittingComment.value) return;
+  if (!newComment.value.trim() || submittingComment.value || checkingViolation.value) return;
 
-  submittingComment.value = true;
+  const content = newComment.value.trim();
+
+  // 先检测违禁词
+  checkingViolation.value = true;
   try {
-    await apiClient.addComment(currentChat.value.id, newComment.value.trim());
+    const checkResult = await apiClient.checkViolation(content);
+
+    if (checkResult.has_violation && checkResult.violations.length > 0) {
+      // 有违规词，显示提示
+      violationResult.value = checkResult;
+      showViolationModal.value = true;
+      checkingViolation.value = false;
+      return;
+    }
+
+    // 无违规词，继续发表
+    submittingComment.value = true;
+    try {
+      await apiClient.addComment(currentChat.value.id, content);
+      // 重新加载评论列表
+      await loadComments(currentChat.value.id);
+      // 更新评论数
+      currentChat.value.comment_count = (currentChat.value.comment_count || 0) + 1;
+      // 清空输入框
+      newComment.value = '';
+    } catch (err) {
+      console.error('发表评论失败:', err);
+      alert('发表失败: ' + err.message);
+    } finally {
+      submittingComment.value = false;
+    }
+
+  } catch (err) {
+    console.error('检测失败:', err);
+    // 检测失败时仍然允许发表
+    submittingComment.value = true;
+    try {
+      await apiClient.addComment(currentChat.value.id, content);
+      await loadComments(currentChat.value.id);
+      currentChat.value.comment_count = (currentChat.value.comment_count || 0) + 1;
+      newComment.value = '';
+    } catch (err2) {
+      console.error('发表评论失败:', err2);
+      alert('发表失败: ' + err2.message);
+    } finally {
+      submittingComment.value = false;
+    }
+  } finally {
+    checkingViolation.value = false;
+  }
+}
+
+/**
+ * 获取高亮后的评论内容
+ */
+function getHighlightedContent(content, violations) {
+  if (!violations || violations.length === 0) return content;
+
+  let result = content;
+
+  // 从后往前替换（避免索引变化）
+  const sortedViolations = [...violations].sort((a, b) => b.start - a.start);
+
+  sortedViolations.forEach(v => {
+    const before = result.substring(0, v.start);
+    const violation = result.substring(v.start, v.end);
+    const after = result.substring(v.end);
+
+    result = before +
+             `<span class="violation-highlight" title="分类: ${v.category}">${violation}</span>` +
+             after;
+  });
+
+  return result;
+}
+
+/**
+ * 关闭违规提示并允许编辑
+ */
+function closeViolationModal() {
+  showViolationModal.value = false;
+  violationResult.value = null;
+}
+
+/**
+ * 确认删除评论
+ */
+function confirmDeleteComment(comment) {
+  commentToDelete.value = comment;
+  showDeleteConfirm.value = true;
+  deleteReason.value = '';
+}
+
+/**
+ * 执行删除评论
+ */
+async function executeDeleteComment() {
+  if (!commentToDelete.value) return;
+
+  try {
+    await apiClient.deleteComment(
+      commentToDelete.value.comment_id,
+      deleteReason.value
+    );
+    showDeleteConfirm.value = false;
+    commentToDelete.value = null;
+    deleteReason.value = '';
     // 重新加载评论列表
     await loadComments(currentChat.value.id);
-    // 更新评论数
-    currentChat.value.comment_count = (currentChat.value.comment_count || 0) + 1;
-    // 清空输入框
-    newComment.value = '';
   } catch (err) {
-    console.error('发表评论失败:', err);
-    alert('发表失败: ' + err.message);
-  } finally {
-    submittingComment.value = false;
+    console.error('删除评论失败:', err);
+    alert('删除失败: ' + err.message);
   }
+}
+
+/**
+ * 恢复评论
+ */
+async function restoreComment(commentId) {
+  if (!confirm('确认恢复这条评论吗？')) return;
+
+  try {
+    await apiClient.restoreComment(commentId);
+    // 重新加载评论列表
+    await loadComments(currentChat.value.id);
+  } catch (err) {
+    console.error('恢复评论失败:', err);
+    alert('恢复失败: ' + err.message);
+  }
+}
+
+// ========== 驳回对话功能 ==========
+
+function rejectPublicChat() {
+  if (!currentChat.value) return;
+  showRejectModal.value = true;
+  rejectReason.value = '';
+}
+
+async function confirmRejectChat() {
+  if (!currentChat.value) return;
+
+  try {
+    await apiClient.reviewPublicationRequest(
+      currentChat.value.id,
+      false,
+      rejectReason.value
+    );
+
+    showRejectModal.value = false;
+    rejectReason.value = '';
+    alert('✅ 已驳回该对话');
+
+    // 返回列表并刷新
+    backToList();
+  } catch (err) {
+    console.error('驳回失败:', err);
+    alert('驳回失败: ' + err.message);
+  }
+}
+
+function cancelRejectChat() {
+  showRejectModal.value = false;
+  rejectReason.value = '';
 }
 
 // ========== 初始化 ==========
@@ -564,6 +862,17 @@ onMounted(() => {
 .action-btn.liked {
   background: rgba(255, 107, 107, 0.3);
   border-color: rgba(255, 107, 107, 0.5);
+}
+
+.action-btn.reject-btn {
+  border-color: rgba(255, 87, 87, 0.4);
+  background: rgba(255, 87, 87, 0.1);
+  color: #ff5757;
+}
+
+.action-btn.reject-btn:hover {
+  background: rgba(255, 87, 87, 0.2);
+  border-color: rgba(255, 87, 87, 0.6);
 }
 
 .detail-content {
@@ -863,5 +1172,400 @@ onMounted(() => {
 :root[data-theme="light"] .chats-list::-webkit-scrollbar-thumb:hover {
   background-color: #4a8eff;
   background-clip: content-box;
+}
+
+/* ========== 管理员功能样式 ========== */
+
+/* 评论操作按钮 */
+.comment-action-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .18s ease;
+  margin-left: auto;
+}
+
+.comment-action-btn:hover {
+  background: rgba(255,255,255,.10);
+  border-color: rgba(255,255,255,.20);
+}
+
+.comment-action-btn.delete {
+  border-color: rgba(255,107,107,.30);
+  background: rgba(255,107,107,.1);
+  color: #ff6b6b;
+}
+
+.comment-action-btn.delete:hover {
+  background: rgba(255,107,107,.2);
+  border-color: rgba(255,107,107,.50);
+}
+
+.comment-action-btn.restore {
+  border-color: rgba(74,222,128,.30);
+  background: rgba(74,222,128,.1);
+  color: #4ade80;
+}
+
+.comment-action-btn.restore:hover {
+  background: rgba(74,222,128,.2);
+  border-color: rgba(74,222,128,.50);
+}
+
+.comment-action-btn.user-delete {
+  border-color: rgba(251,191,36,.30);
+  background: rgba(251,191,36,.1);
+  color: #fbbf24;
+}
+
+.comment-action-btn.user-delete:hover {
+  background: rgba(251,191,36,.2);
+  border-color: rgba(251,191,36,.50);
+}
+
+/* 已删除评论样式 */
+.comment-content.deleted {
+  color: var(--muted);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.delete-reason {
+  color: #ff6b6b;
+  font-size: 13px;
+}
+
+/* 违规词高亮样式 */
+.violation-highlight {
+  text-decoration: underline wavy #ff4444;
+  background: rgba(255, 68, 68, 0.1);
+  padding: 0 2px;
+  border-radius: 2px;
+  font-weight: 500;
+}
+
+/* 弹窗样式 */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.modal {
+  background: var(--home-bg);
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.10);
+  max-width: 500px;
+  width: 100%;
+  max-height: 90vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.close-btn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  transition: all .18s ease;
+}
+
+.close-btn:hover {
+  background: rgba(255,255,255,.1);
+  color: var(--text);
+}
+
+.modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding: 16px 24px;
+  border-top: 1px solid var(--line);
+}
+
+.hint-text {
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.reason-textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+  margin-top: 12px;
+}
+
+.reason-textarea:focus {
+  border-color: rgba(255, 87, 87, 0.5);
+  background: rgba(255,255,255,.08);
+}
+
+.danger-btn {
+  padding: 10px 20px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.danger-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.4);
+}
+
+.secondary-btn {
+  padding: 10px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(255,255,255,0.05);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.secondary-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.3);
+}
+
+.comment-preview {
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.05);
+  margin-bottom: 16px;
+}
+
+.comment-preview p {
+  margin: 4px 0;
+  color: var(--text);
+}
+
+.form-group {
+  margin-bottom: 16px;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.form-textarea {
+  width: 100%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+  font-family: inherit;
+  resize: vertical;
+  min-height: 80px;
+}
+
+.form-textarea:focus {
+  border-color: rgba(106,167,255,.40);
+  background: rgba(106,167,255,.08);
+}
+
+.secondary-btn,
+.primary-btn {
+  padding: 10px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.08);
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.primary-btn {
+  background: rgba(106,167,255,.2);
+  border-color: rgba(106,167,255,.30);
+}
+
+.primary-btn:hover {
+  background: rgba(106,167,255,.3);
+  border-color: rgba(106,167,255,.50);
+}
+
+.primary-btn.danger {
+  background: rgba(255,107,107,.2);
+  border-color: rgba(255,107,107,.30);
+  color: #ff6b6b;
+}
+
+.primary-btn.danger:hover {
+  background: rgba(255,107,107,.3);
+  border-color: rgba(255,107,107,.50);
+}
+
+.secondary-btn:hover {
+  background: rgba(255,255,255,.15);
+}
+
+/* 浅色模式适配 */
+:root[data-theme="light"] .modal {
+  background: #ffffff;
+  border-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .comment-preview {
+  background: #f5f5f5;
+}
+
+:root[data-theme="light"] .form-textarea {
+  background: #ffffff;
+  border-color: #bdbdbd;
+  color: #000000;
+}
+
+:root[data-theme="light"] .secondary-btn {
+  background: #ffffff;
+  border-color: #e0e0e0;
+}
+
+:root[data-theme="light"] .primary-btn {
+  background: rgba(106,167,255,.3);
+  border-color: #6aa7ff;
+}
+
+:root[data-theme="light"] .primary-btn.danger {
+  background: rgba(255,107,107,.2);
+  border-color: #ff6b6b;
+}
+
+/* 违规提示弹窗样式 */
+.violation-modal {
+  max-width: 600px;
+}
+
+.violation-modal .modal-header h3 {
+  color: #ff6b6b;
+}
+
+.violation-message {
+  font-size: 16px;
+  color: var(--text);
+  margin-bottom: 15px;
+}
+
+.violation-content-preview {
+  background: rgba(255, 68, 68, 0.05);
+  border: 1px solid rgba(255, 68, 68, 0.2);
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 20px;
+  font-size: 15px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.violation-list {
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  padding: 15px;
+}
+
+.violation-list h4 {
+  margin: 0 0 10px 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.violation-item {
+  margin-bottom: 8px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.violation-word {
+  color: #ff6b6b;
+  font-weight: 600;
+}
+
+.violation-info {
+  color: var(--muted);
+  margin-left: 5px;
+}
+
+:root[data-theme="light"] .violation-content-preview {
+  background: rgba(255, 68, 68, 0.08);
+  border-color: rgba(255, 68, 68, 0.3);
+}
+
+:root[data-theme="light"] .violation-list {
+  background: rgba(0, 0, 0, 0.03);
+}
+
+:root[data-theme="light"] .violation-word {
+  color: #d32f2f;
+}
+
+:root[data-theme="light"] .violation-info {
+  color: #666;
 }
 </style>

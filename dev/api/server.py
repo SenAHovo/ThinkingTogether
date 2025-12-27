@@ -69,6 +69,139 @@ except Exception as e:
     print(f"[API] 数据库初始化失败: {e}，仅支持游客模式（无法登录/注册）")
     _db_manager = None
 
+# ========== 违禁词检测（Trie树） ==========
+
+class BannedWordsTrie:
+    """违禁词Trie树"""
+
+    def __init__(self):
+        self.root = {'children': {}}
+        self._loaded = False
+
+    def insert(self, word: str, category: str = "其他", severity: int = 1):
+        """插入一个违禁词"""
+        node = self.root
+        for char in word:
+            if char not in node['children']:
+                node['children'][char] = {
+                    'char': char,
+                    'children': {},
+                    'is_end': False
+                }
+            node = node['children'][char]
+
+        node['is_end'] = True
+        node['category'] = category
+        node['severity'] = severity
+
+    def search(self, text: str):
+        """
+        搜索文本中的违禁词
+        返回第一个匹配的违禁词信息，或None
+        """
+        for i in range(len(text)):
+            node = self.root
+
+            for j in range(i, len(text)):
+                char = text[j]
+
+                if char not in node['children']:
+                    break
+
+                node = node['children'][char]
+
+                if node['is_end']:
+                    # 找到违禁词，立即返回
+                    return {
+                        'word': text[i:j+1],
+                        'start': i,
+                        'end': j+1,
+                        'category': node['category'],
+                        'severity': node['severity']
+                    }
+
+        return None
+
+    def search_all(self, text: str):
+        """
+        搜索文本中的所有违禁词
+        返回所有匹配的违禁词列表
+        """
+        violations = []
+
+        for i in range(len(text)):
+            node = self.root
+
+            for j in range(i, len(text)):
+                char = text[j]
+
+                if char not in node['children']:
+                    break
+
+                node = node['children'][char]
+
+                if node['is_end']:
+                    violations.append({
+                        'word': text[i:j+1],
+                        'start': i,
+                        'end': j+1,
+                        'category': node['category'],
+                        'severity': node['severity']
+                    })
+                    break  # 找到一个后继续从下一个位置开始
+
+        return violations
+
+# 全局违禁词Trie树
+_banned_words_trie = BannedWordsTrie()
+
+def load_banned_words_to_trie():
+    """从数据库加载违禁词到Trie树"""
+    global _banned_words_trie
+
+    if not _db_manager:
+        print("[违禁词] 数据库未连接，无法加载违禁词")
+        return False
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute("""
+                SELECT word, category, severity
+                FROM forbidden_words
+                WHERE is_active = 1
+            """)
+            words = cursor.fetchall()
+
+            # 重建Trie树
+            _banned_words_trie = BannedWordsTrie()
+            count = 0
+            for word_info in words:
+                _banned_words_trie.insert(
+                    word_info['word'],
+                    word_info['category'],
+                    word_info['severity']
+                )
+                count += 1
+
+            _banned_words_trie._loaded = True
+            print(f"[违禁词] 成功加载 {count} 个违禁词到Trie树")
+            return True
+
+    except Exception as e:
+        print(f"[违禁词] 加载失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def reload_banned_words():
+    """重新加载违禁词（管理员修改后调用）"""
+    return load_banned_words_to_trie()
+
+# 应用启动时加载违禁词
+if _db_available:
+    load_banned_words_to_trie()
+
+
 # ========== FastAPI 应用初始化 ==========
 app = FastAPI(
     title="智炬五维协同学习系统 API",
@@ -2356,15 +2489,16 @@ async def get_public_chat_hall(
                     t.topic as title,
                     t.created_at,
                     u.username,
+                    to_owners.publication_status,
                     COUNT(DISTINCT tl.user_id) as like_count,
                     COUNT(DISTINCT c.comment_id) as comment_count
                 FROM threads t
-                LEFT JOIN thread_owners to_owners ON t.thread_id = to_owners.thread_id
+                INNER JOIN thread_owners to_owners ON t.thread_id = to_owners.thread_id
                 LEFT JOIN users u ON to_owners.user_id = u.user_id
                 LEFT JOIN thread_likes tl ON t.thread_id = tl.thread_id
                 LEFT JOIN comments c ON t.thread_id = c.thread_id AND c.is_deleted = 0
                 WHERE to_owners.publication_status = 'published'
-                GROUP BY t.thread_id, t.topic, t.created_at, u.username
+                GROUP BY t.thread_id, t.topic, t.created_at, u.username, to_owners.publication_status
                 ORDER BY like_count DESC, t.created_at DESC
                 LIMIT %s OFFSET %s
             """
@@ -2397,6 +2531,7 @@ async def get_public_chat_hall(
                     "title": chat['title'],
                     "username": chat['username'],
                     "created_at": chat['created_at'].isoformat() if chat['created_at'] else None,
+                    "publication_status": chat['publication_status'],
                     "like_count": chat['like_count'],
                     "comment_count": chat['comment_count'],
                     "is_liked": chat['id'] in liked_thread_ids,
@@ -2450,6 +2585,56 @@ async def get_thread_comments_api(thread_id: str):
     except Exception as e:
         print(f"[API] 获取评论列表失败: {e}")
         raise HTTPException(status_code=500, detail="获取评论列表失败")
+
+
+# ========== 违禁词检测 API ==========
+
+class CheckViolationRequest(BaseModel):
+    content: str
+
+class ViolationInfo(BaseModel):
+    word: str
+    start: int
+    end: int
+    category: str
+    severity: int
+
+@app.post("/api/comments/check-violation")
+async def check_violation(request_data: CheckViolationRequest):
+    """
+    检测评论内容是否包含违禁词
+    返回所有违规词及其位置
+    """
+    content = request_data.content
+
+    if not content or not content.strip():
+        return {
+            "has_violation": False,
+            "violations": []
+        }
+
+    try:
+        # 确保Trie树已加载
+        if not _banned_words_trie._loaded:
+            load_banned_words_to_trie()
+
+        # 执行检测（返回所有违规词）
+        violations = _banned_words_trie.search_all(content)
+
+        return {
+            "has_violation": len(violations) > 0,
+            "violations": violations
+        }
+
+    except Exception as e:
+        print(f"[API] 违禁词检测失败: {e}")
+        import traceback
+        traceback.print_exc()
+        # 检测失败时不阻止评论发表
+        return {
+            "has_violation": False,
+            "violations": []
+        }
 
 
 @app.post("/api/public/chats/{thread_id}/comments")
@@ -2506,6 +2691,713 @@ async def add_comment_api(
     except Exception as e:
         print(f"[API] 添加评论失败: {e}")
         raise HTTPException(status_code=500, detail="添加评论失败")
+
+
+# ========== 评论管理 API ==========
+
+class DeleteCommentRequest(BaseModel):
+    reason: Optional[str] = None  # 删除原因
+
+
+class BatchCommentRequest(BaseModel):
+    comment_ids: List[str]
+    action: str  # 'restore' 或 'delete'
+
+
+@app.get("/api/admin/comments")
+async def get_admin_comments(
+    status: Optional[str] = None,  # 'all', 'normal', 'deleted', 'violation'
+    thread_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    keyword: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    获取评论列表（管理员）
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 构建查询条件
+            conditions = []
+            params = []
+
+            if status == 'deleted':
+                conditions.append("c.is_deleted = 1")
+            elif status == 'normal':
+                conditions.append("c.is_deleted = 0")
+            elif status == 'violation':
+                conditions.append("c.is_violation = 1")
+
+            if thread_id:
+                conditions.append("c.thread_id = %s")
+                params.append(thread_id)
+
+            if user_id:
+                conditions.append("c.user_id = %s")
+                params.append(user_id)
+
+            if keyword:
+                conditions.append("c.content LIKE %s")
+                params.append(f"%{keyword}%")
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            # 获取总数
+            count_query = f"""
+                SELECT COUNT(*) as total
+                FROM comments c
+                WHERE {where_clause}
+            """
+            cursor.execute(count_query, params)
+            total = cursor.fetchone()['total']
+
+            # 获取评论列表
+            offset = (page - 1) * page_size
+            query = f"""
+                SELECT
+                    c.comment_id,
+                    c.thread_id,
+                    c.user_id,
+                    c.content,
+                    c.is_deleted,
+                    c.is_violation,
+                    c.deleted_at,
+                    c.deleted_by,
+                    c.delete_reason,
+                    c.created_at,
+                    u.username,
+                    u2.username as deleted_by_username,
+                    t.topic as thread_topic
+                FROM comments c
+                LEFT JOIN users u ON c.user_id = u.user_id
+                LEFT JOIN users u2 ON c.deleted_by = u2.user_id
+                LEFT JOIN threads t ON c.thread_id = t.thread_id
+                WHERE {where_clause}
+                ORDER BY c.created_at DESC
+                LIMIT %s OFFSET %s
+            """
+
+            cursor.execute(query, params + [page_size, offset])
+            comments = cursor.fetchall()
+
+            # 格式化结果
+            result = []
+            for comment in comments:
+                result.append({
+                    "comment_id": comment['comment_id'],
+                    "thread_id": comment['thread_id'],
+                    "thread_topic": comment['thread_topic'],
+                    "user_id": comment['user_id'],
+                    "username": comment['username'],
+                    "content": comment['content'],
+                    "is_deleted": bool(comment['is_deleted']),
+                    "is_violation": bool(comment['is_violation']),
+                    "deleted_at": comment['deleted_at'].isoformat() if comment['deleted_at'] else None,
+                    "deleted_by": comment['deleted_by'],
+                    "deleted_by_username": comment['deleted_by_username'],
+                    "delete_reason": comment['delete_reason'],
+                    "created_at": comment['created_at'].isoformat() if comment['created_at'] else None
+                })
+
+            return {
+                "comments": result,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": (total + page_size - 1) // page_size
+            }
+
+    except Exception as e:
+        print(f"[API] 获取评论列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取评论列表失败")
+
+
+@app.delete("/api/admin/comments/{comment_id}")
+async def delete_comment_admin(
+    comment_id: str,
+    request_data: DeleteCommentRequest,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    软删除评论（管理员）
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查评论是否存在
+            cursor.execute("SELECT comment_id FROM comments WHERE comment_id = %s", (comment_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="评论不存在")
+
+            # 软删除
+            cursor.execute("""
+                UPDATE comments
+                SET is_deleted = 1,
+                    deleted_at = NOW(),
+                    deleted_by = %s,
+                    delete_reason = %s
+                WHERE comment_id = %s
+            """, (current_user['user_id'], request_data.reason, comment_id))
+
+            return {"message": "评论已删除"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 删除评论失败: {e}")
+        raise HTTPException(status_code=500, detail="删除评论失败")
+
+
+@app.delete("/api/comments/{comment_id}")
+async def delete_comment_user(
+    comment_id: str,
+    request_data: DeleteCommentRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    用户删除自己的评论
+    """
+    if not current_user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查评论是否存在且属于当前用户
+            cursor.execute(
+                "SELECT comment_id, user_id, is_deleted FROM comments WHERE comment_id = %s",
+                (comment_id,)
+            )
+            comment = cursor.fetchone()
+
+            if not comment:
+                raise HTTPException(status_code=404, detail="评论不存在")
+
+            if comment['user_id'] != current_user['user_id']:
+                raise HTTPException(status_code=403, detail="无权删除此评论")
+
+            if comment['is_deleted']:
+                raise HTTPException(status_code=400, detail="评论已被删除")
+
+            # 软删除
+            cursor.execute("""
+                UPDATE comments
+                SET is_deleted = 1,
+                    deleted_at = NOW(),
+                    deleted_by = %s,
+                    delete_reason = %s
+                WHERE comment_id = %s
+            """, (current_user['user_id'], request_data.reason, comment_id))
+
+            return {"message": "评论已删除"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 删除评论失败: {e}")
+        raise HTTPException(status_code=500, detail="删除评论失败")
+
+
+@app.put("/api/admin/comments/{comment_id}/restore")
+async def restore_comment(
+    comment_id: str,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    恢复已删除评论
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查评论是否存在且已删除
+            cursor.execute(
+                "SELECT comment_id, is_deleted FROM comments WHERE comment_id = %s",
+                (comment_id,)
+            )
+            comment = cursor.fetchone()
+            if not comment:
+                raise HTTPException(status_code=404, detail="评论不存在")
+            if not comment['is_deleted']:
+                raise HTTPException(status_code=400, detail="评论未被删除")
+
+            # 恢复评论
+            cursor.execute("""
+                UPDATE comments
+                SET is_deleted = 0,
+                    deleted_at = NULL,
+                    deleted_by = NULL,
+                    delete_reason = NULL
+                WHERE comment_id = %s
+            """, (comment_id,))
+
+            return {"message": "评论已恢复"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 恢复评论失败: {e}")
+        raise HTTPException(status_code=500, detail="恢复评论失败")
+
+
+@app.post("/api/admin/comments/batch")
+async def batch_comments_action(
+    request_data: BatchCommentRequest,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    批量操作评论
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    if request_data.action not in ['restore', 'delete']:
+        raise HTTPException(status_code=400, detail="无效的操作")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            if request_data.action == 'restore':
+                # 批量恢复
+                placeholders = ','.join(['%s'] * len(request_data.comment_ids))
+                cursor.execute(f"""
+                    UPDATE comments
+                    SET is_deleted = 0,
+                        deleted_at = NULL,
+                        deleted_by = NULL,
+                        delete_reason = NULL
+                    WHERE comment_id IN ({placeholders})
+                """, request_data.comment_ids)
+                return {"message": f"已恢复 {cursor.rowcount} 条评论"}
+
+            elif request_data.action == 'delete':
+                # 批量删除
+                placeholders = ','.join(['%s'] * len(request_data.comment_ids))
+                cursor.execute(f"""
+                    UPDATE comments
+                    SET is_deleted = 1,
+                        deleted_at = NOW(),
+                        deleted_by = %s
+                    WHERE comment_id IN ({placeholders})
+                """, [current_user['user_id']] + request_data.comment_ids)
+                return {"message": f"已删除 {cursor.rowcount} 条评论"}
+
+    except Exception as e:
+        print(f"[API] 批量操作失败: {e}")
+        raise HTTPException(status_code=500, detail="批量操作失败")
+
+
+@app.get("/api/admin/comments/stats")
+async def get_comments_stats(
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    获取评论统计数据
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 总评论数
+            cursor.execute("SELECT COUNT(*) as count FROM comments")
+            total = cursor.fetchone()['count']
+
+            # 正常评论数
+            cursor.execute("SELECT COUNT(*) as count FROM comments WHERE is_deleted = 0")
+            normal = cursor.fetchone()['count']
+
+            # 已删除评论数
+            cursor.execute("SELECT COUNT(*) as count FROM comments WHERE is_deleted = 1")
+            deleted = cursor.fetchone()['count']
+
+            # 违规评论数
+            cursor.execute("SELECT COUNT(*) as count FROM comments WHERE is_violation = 1")
+            violation = cursor.fetchone()['count']
+
+            # 今日评论数
+            cursor.execute("""
+                SELECT COUNT(*) as count
+                FROM comments
+                WHERE DATE(created_at) = CURDATE()
+            """)
+            today = cursor.fetchone()['count']
+
+            return {
+                "total": total,
+                "normal": normal,
+                "deleted": deleted,
+                "violation": violation,
+                "today": today
+            }
+
+    except Exception as e:
+        print(f"[API] 获取评论统计失败: {e}")
+        raise HTTPException(status_code=500, detail="获取评论统计失败")
+
+
+@app.get("/api/admin/dashboard-stats")
+async def get_dashboard_stats(
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    获取数据看板统计数据
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 用户总数
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'user'")
+            user_count = cursor.fetchone()['count']
+
+            # 管理员总数（admin + super_admin）
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role IN ('admin', 'super_admin')")
+            admin_count = cursor.fetchone()['count']
+
+            # 总对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM threads")
+            thread_count = cursor.fetchone()['count']
+
+            # 已发布对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'published'")
+            published_count = cursor.fetchone()['count']
+
+            # 违规对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'rejected'")
+            violation_count = cursor.fetchone()['count']
+
+            # 评论总数
+            cursor.execute("SELECT COUNT(*) as count FROM comments")
+            comment_count = cursor.fetchone()['count']
+
+            # 今日活跃用户数（今日有评论、对话或登录的用户）
+            cursor.execute("""
+                SELECT COUNT(DISTINCT user_id) as count
+                FROM (
+                    SELECT user_id FROM threads WHERE DATE(created_at) = CURDATE()
+                    UNION
+                    SELECT user_id FROM comments WHERE DATE(created_at) = CURDATE()
+                    UNION
+                    SELECT user_id FROM user_sessions WHERE DATE(created_at) = CURDATE()
+                ) AS active_users
+                WHERE user_id IS NOT NULL AND user_id != ''
+            """)
+            active_users_today = cursor.fetchone()['count']
+
+            # 公开对话总数
+            public_chat_count = published_count
+
+            return {
+                "user_count": user_count,
+                "admin_count": admin_count,
+                "thread_count": thread_count,
+                "published_count": published_count,
+                "violation_count": violation_count,
+                "comment_count": comment_count,
+                "active_users_today": active_users_today,
+                "public_chat_count": public_chat_count,
+            }
+
+    except Exception as e:
+        print(f"[API] 获取数据看板统计失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="获取数据看板统计失败")
+
+
+@app.get("/api/admin/top-public-chats")
+async def get_top_public_chats(
+    limit: int = 3,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    获取点赞最高的公开对话
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            query = """
+                SELECT
+                    t.thread_id as id,
+                    t.topic as title,
+                    u.username,
+                    towner.publication_status,
+                    COUNT(tl.id) as like_count,
+                    towner.reviewed_at
+                FROM threads t
+                INNER JOIN thread_owners towner ON t.thread_id = towner.thread_id
+                LEFT JOIN users u ON towner.user_id = u.user_id
+                LEFT JOIN thread_likes tl ON t.thread_id = tl.thread_id
+                WHERE towner.publication_status = 'published'
+                GROUP BY t.thread_id, t.topic, u.username, towner.publication_status, towner.reviewed_at
+                ORDER BY like_count DESC, towner.reviewed_at DESC
+                LIMIT %s
+            """
+
+            cursor.execute(query, (limit,))
+            chats = cursor.fetchall()
+
+            result = []
+            for chat in chats:
+                result.append({
+                    "id": chat['id'],
+                    "title": chat['title'],
+                    "username": chat['username'],
+                    "like_count": chat['like_count'],
+                    "publication_status": chat['publication_status'],
+                })
+
+            return {
+                "chats": result
+            }
+
+    except Exception as e:
+        print(f"[API] 获取热门对话失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="获取热门对话失败")
+
+
+# ========== 违禁词管理 API ==========
+
+class BannedWordRequest(BaseModel):
+    word: str
+    category: Optional[str] = "其他"
+    severity: Optional[int] = 1
+
+
+class UpdateBannedWordRequest(BaseModel):
+    word: Optional[str] = None
+    category: Optional[str] = None
+    severity: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+@app.get("/api/admin/banned-words")
+async def get_banned_words(
+    keyword: Optional[str] = None,
+    category: Optional[str] = None,
+    severity: Optional[int] = None,
+    is_active: Optional[bool] = None,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    获取违禁词列表（无分页，返回所有数据）
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 构建查询条件
+            conditions = []
+            params = []
+
+            if keyword:
+                conditions.append("word LIKE %s")
+                params.append(f"%{keyword}%")
+
+            if category:
+                conditions.append("category = %s")
+                params.append(category)
+
+            if severity is not None:
+                conditions.append("severity = %s")
+                params.append(severity)
+
+            if is_active is not None:
+                conditions.append("is_active = %s")
+                params.append(int(is_active))
+
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+
+            # 获取所有违禁词列表（无分页）
+            query = f"""
+                SELECT
+                    f.word_id, f.word, f.category, f.severity, f.is_active,
+                    f.created_at, f.created_by, f.updated_at,
+                    u.username as created_by_username
+                FROM forbidden_words f
+                LEFT JOIN users u ON f.created_by = u.user_id
+                WHERE {where_clause}
+                ORDER BY f.created_at DESC
+            """
+
+            cursor.execute(query, params)
+            words = cursor.fetchall()
+
+            # 格式化结果
+            result = []
+            for word in words:
+                result.append({
+                    "word_id": word['word_id'],
+                    "word": word['word'],
+                    "category": word['category'],
+                    "severity": word['severity'],
+                    "is_active": bool(word['is_active']),
+                    "created_at": word['created_at'].isoformat() if word['created_at'] else None,
+                    "created_by": word['created_by'],
+                    "created_by_username": word['created_by_username'],
+                    "updated_at": word['updated_at'].isoformat() if word['updated_at'] else None
+                })
+
+            print(f"[API] 获取违禁词列表成功，共 {len(result)} 条")
+
+            return {
+                "words": result,
+                "total": len(result)
+            }
+
+    except Exception as e:
+        print(f"[API] 获取违禁词列表失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="获取违禁词列表失败")
+
+
+@app.post("/api/admin/banned-words")
+async def create_banned_word(
+    request_data: BannedWordRequest,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    添加违禁词
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    word = request_data.word.strip()
+    if not word:
+        raise HTTPException(status_code=400, detail="违禁词不能为空")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查是否已存在
+            cursor.execute("SELECT word_id FROM forbidden_words WHERE word = %s", (word,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="该违禁词已存在")
+
+            # 创建违禁词 - 使用自增ID，不需要手动指定word_id
+            cursor.execute("""
+                INSERT INTO forbidden_words (word, category, severity, is_active, created_by)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (word, request_data.category, request_data.severity, 1, current_user['user_id']))
+
+            return {
+                "message": "违禁词添加成功"
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 添加违禁词失败: {e}")
+        raise HTTPException(status_code=500, detail="添加违禁词失败")
+
+
+@app.put("/api/admin/banned-words/{word_id}")
+async def update_banned_word(
+    word_id: str,
+    request_data: UpdateBannedWordRequest,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    更新违禁词
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查是否存在
+            cursor.execute("SELECT word FROM forbidden_words WHERE word_id = %s", (word_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="违禁词不存在")
+
+            # 构建更新语句
+            updates = []
+            params = []
+
+            if request_data.word is not None:
+                word = request_data.word.strip()
+                if not word:
+                    raise HTTPException(status_code=400, detail="违禁词不能为空")
+                # 检查新词是否已被其他记录使用
+                cursor.execute("SELECT word_id FROM forbidden_words WHERE word = %s AND word_id != %s",
+                             (word, word_id))
+                if cursor.fetchone():
+                    raise HTTPException(status_code=400, detail="该违禁词已存在")
+                updates.append("word = %s")
+                params.append(word)
+
+            if request_data.category is not None:
+                updates.append("category = %s")
+                params.append(request_data.category)
+
+            if request_data.severity is not None:
+                updates.append("severity = %s")
+                params.append(request_data.severity)
+
+            if request_data.is_active is not None:
+                updates.append("is_active = %s")
+                params.append(int(request_data.is_active))
+
+            if not updates:
+                raise HTTPException(status_code=400, detail="没有需要更新的字段")
+
+            params.append(word_id)
+            query = f"UPDATE forbidden_words SET {', '.join(updates)} WHERE word_id = %s"
+            cursor.execute(query, params)
+
+            return {"message": "违禁词更新成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 更新违禁词失败: {e}")
+        raise HTTPException(status_code=500, detail="更新违禁词失败")
+
+
+@app.delete("/api/admin/banned-words/{word_id}")
+async def delete_banned_word(
+    word_id: str,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """
+    删除违禁词
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查是否存在
+            cursor.execute("SELECT word FROM forbidden_words WHERE word_id = %s", (word_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="违禁词不存在")
+
+            # 删除
+            cursor.execute("DELETE FROM forbidden_words WHERE word_id = %s", (word_id,))
+
+            return {"message": "违禁词已删除"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 删除违禁词失败: {e}")
+        raise HTTPException(status_code=500, detail="删除违禁词失败")
 
 
 # ========== 异常处理 ==========

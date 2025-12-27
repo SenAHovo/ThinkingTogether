@@ -21,7 +21,8 @@
       "Bash(echo:*)",
       "Bash(pip install:*)",
       "Bash(npm run build:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(ls:*)"
     ],
     "deny": [],
     "ask": []
