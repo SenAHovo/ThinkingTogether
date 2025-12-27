@@ -14,7 +14,7 @@
     </header>
 
     <main class="main">
-      <div class="tabs">
+      <div class="tabs" :class="{ 'three-tabs': currentUser?.role !== 'super_admin' }">
         <!-- 只有超级管理员才能看到用户管理标签 -->
         <button
           v-if="currentUser && (currentUser.role === 'super_admin')"
@@ -24,24 +24,33 @@
         >
           用户管理
         </button>
-        <!-- 管理员和超级管理员都可以看到对话审核 -->
+        <!-- 管理员和超级管理员都可以看到公开对话管理 -->
         <button
           v-if="currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin')"
           class="tab"
-          :class="{ active: activeTab === 'requests' }"
-          @click="activeTab = 'requests'"
+          :class="{ active: activeTab === 'reviews' }"
+          @click="activeTab = 'reviews'"
         >
-          对话审核
+          公开对话管理
           <span v-if="pendingCount > 0" class="badge">{{ pendingCount }}</span>
         </button>
-        <!-- 管理员和超级管理员都可以看到已公开对话 -->
+        <!-- 管理员和超级管理员都可以看到评论管理 -->
         <button
           v-if="currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin')"
           class="tab"
-          :class="{ active: activeTab === 'public' }"
-          @click="activeTab = 'public'"
+          :class="{ active: activeTab === 'comments' }"
+          @click="activeTab = 'comments'"
         >
-          已公开对话
+          评论管理
+        </button>
+        <!-- 管理员和超级管理员都可以看到数据看板 -->
+        <button
+          v-if="currentUser && (currentUser.role === 'admin' || currentUser.role === 'super_admin')"
+          class="tab"
+          :class="{ active: activeTab === 'dashboard' }"
+          @click="activeTab = 'dashboard'"
+        >
+          数据看板
         </button>
       </div>
 
@@ -50,10 +59,11 @@
         <div class="actions">
           <input
             v-model="userSearch"
+            @input="filterUsers"
             class="search-input"
-            placeholder="搜索用户..."
+            placeholder="搜索用户名或邮箱..."
           />
-          <button class="primary-btn" @click="showUserModal = true; editingUser = null">
+          <button class="primary-btn" @click="openAddUserModal">
             + 新增用户
           </button>
         </div>
@@ -72,7 +82,7 @@
               </tr>
             </thead>
             <tbody>
-              <tr v-for="user in filteredUsers" :key="user.id">
+              <tr v-for="user in paginatedUsers" :key="user.id">
                 <td class="mono">{{ user.id.slice(0, 8) }}...</td>
                 <td :class="['username-cell', user.role]">{{ user.username }}</td>
                 <td>{{ user.email }}</td>
@@ -87,27 +97,57 @@
                 <td>{{ formatDate(user.created_at) }}</td>
                 <td>
                   <div class="action-buttons">
-                    <button class="icon-btn" @click="editUser(user)" title="编辑">✏</button>
+                    <button v-if="user.is_active" class="action-btn ban" @click="banUser(user)" title="封禁">封禁</button>
+                    <button v-else class="action-btn unban" @click="unbanUser(user)" title="解禁">解禁</button>
+                    <button class="action-btn role" @click="openRoleChangeModal(user)" title="修改权限">权限</button>
                     <button class="icon-btn danger" @click="confirmDeleteUser(user)" title="删除">🗑</button>
                   </div>
                 </td>
               </tr>
-              <tr v-if="filteredUsers.length === 0">
+              <tr v-if="paginatedUsers.length === 0">
                 <td colspan="7" class="empty-state">暂无用户数据</td>
               </tr>
             </tbody>
           </table>
         </div>
+
+        <!-- 分页控件 -->
+        <div v-if="totalPages > 1" class="pagination">
+          <button
+            class="pagination-btn"
+            :disabled="userCurrentPage === 1"
+            @click="goToPage(userCurrentPage - 1)"
+          >
+            上一页
+          </button>
+          <span class="pagination-info">
+            第 {{ userCurrentPage }} / {{ totalPages }} 页，共 {{ filteredUsers.length }} 个用户
+          </span>
+          <button
+            class="pagination-btn"
+            :disabled="userCurrentPage === totalPages"
+            @click="goToPage(userCurrentPage + 1)"
+          >
+            下一页
+          </button>
+        </div>
       </div>
 
       <!-- 对话审核 -->
-      <div v-show="activeTab === 'requests'" class="tab-content">
+      <div v-show="activeTab === 'reviews'" class="tab-content">
         <div class="filter-row">
-          <select v-model="requestStatus" @change="filterRequests" class="status-select">
+          <!-- 第一级筛选：角色（仅超级管理员可见） -->
+          <select v-if="currentUser?.role === 'super_admin'" v-model="requestUserRole" @change="handleFilterChange" class="status-select">
+            <option value="all">所有角色</option>
+            <option value="user">普通用户</option>
+            <option value="admin">管理员</option>
+          </select>
+          <!-- 第二级筛选：状态 -->
+          <select v-model="requestStatus" @change="handleFilterChange" class="status-select">
+            <option value="all">全部状态</option>
             <option value="pending">待审核</option>
-            <option value="approved">已通过</option>
+            <option value="published">已通过</option>
             <option value="rejected">已驳回</option>
-            <option value="all">全部</option>
           </select>
           <button class="refresh-btn" @click="loadRequests">刷新</button>
         </div>
@@ -119,7 +159,7 @@
             class="request-card"
           >
             <div class="request-header">
-              <div class="request-title">{{ request.chat_title }}</div>
+              <div class="request-title" :title="request.chat_title">{{ truncateTitle(request.chat_title) }}</div>
               <div class="request-meta">
                 <span class="request-user">{{ request.username }}</span>
                 <span class="request-time">{{ formatDate(request.created_at) }}</span>
@@ -128,15 +168,10 @@
 
             <div class="request-body">
               <div class="request-section">
-                <div class="section-label">申请理由：</div>
-                <div class="section-content">{{ request.reason || '无' }}</div>
-              </div>
-
-              <div class="request-section">
-                <div class="section-label">对话内容预览：</div>
+                <div class="section-label">对话内容预览（前3条）：</div>
                 <div class="chat-preview">
                   <div
-                    v-for="(msg, idx) in request.messages_preview"
+                    v-for="(msg, idx) in request.messages_preview.slice(0, 3)"
                     :key="idx"
                     class="preview-message"
                   >
@@ -155,11 +190,14 @@
               </div>
             </div>
 
-            <div v-if="request.status === 'pending'" class="request-actions">
-              <button class="reject-btn" @click="openRejectModal(request)">
+            <div class="request-actions">
+              <button class="detail-btn" @click="openDetailModal(request)">
+                查看详情
+              </button>
+              <button v-if="request.status === 'pending'" class="reject-btn" @click="openRejectModal(request)">
                 驳回
               </button>
-              <button class="approve-btn" @click="approveRequest(request)">
+              <button v-if="request.status === 'pending'" class="approve-btn" @click="approveRequest(request)">
                 通过
               </button>
             </div>
@@ -171,45 +209,52 @@
         </div>
       </div>
 
-      <!-- 已公开对话 -->
-      <div v-show="activeTab === 'public'" class="tab-content">
-        <div class="actions">
-          <button class="refresh-btn" @click="loadPublicChats">刷新</button>
-        </div>
-
-        <div class="public-chats-list">
-          <div
-            v-for="chat in publicChats"
-            :key="chat.id"
-            class="public-chat-card"
-          >
-            <div class="chat-header">
-              <div class="chat-title">{{ chat.title }}</div>
-              <div class="chat-meta">
-                <span>{{ chat.username }}</span>
-                <span>·</span>
-                <span>{{ formatDate(chat.published_at) }}</span>
-              </div>
-            </div>
-            <div class="chat-stats">
-              <span>{{ chat.message_count }} 条消息</span>
-              <span>·</span>
-              <span>{{ chat.view_count || 0 }} 次浏览</span>
-            </div>
+      <!-- 评论管理 -->
+      <div v-show="activeTab === 'comments'" class="tab-content">
+        <div class="comments-section">
+          <h2>评论管理</h2>
+          <p class="info-text">此功能将在后续版本中实现</p>
+          <div class="placeholder-box">
+            <div class="placeholder-icon">💬</div>
+            <p>评论区将包括：</p>
+            <ul class="feature-list">
+              <li>查看所有评论</li>
+              <li>设置违禁词</li>
+              <li>删除违规评论</li>
+              <li>评论审核</li>
+            </ul>
           </div>
+        </div>
+      </div>
 
-          <div v-if="publicChats.length === 0" class="empty-state">
-            暂无已公开对话
+      <!-- 数据看板 -->
+      <div v-show="activeTab === 'dashboard'" class="tab-content">
+        <div class="dashboard-section">
+          <h2>数据看板</h2>
+
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.userCount }}</div>
+              <div class="stat-label">用户总数</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.adminCount }}</div>
+              <div class="stat-label">管理员数量</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-number">{{ stats.threadCount }}</div>
+              <div class="stat-label">总对话数量</div>
+            </div>
           </div>
         </div>
       </div>
     </main>
 
-    <!-- 用户编辑/新增弹窗 -->
+    <!-- 用户新增弹窗 -->
     <div v-if="showUserModal" class="modal-overlay" @click.self="showUserModal = false">
       <div class="modal">
         <div class="modal-header">
-          <h3>{{ editingUser ? '编辑用户' : '新增用户' }}</h3>
+          <h3>新增用户</h3>
           <button class="close-btn" @click="showUserModal = false">×</button>
         </div>
         <div class="modal-body">
@@ -219,11 +264,11 @@
           </div>
           <div class="form-group">
             <label>邮箱</label>
-            <input v-model="userForm.email" type="email" class="form-input" placeholder="请输入邮箱" />
+            <input v-model="userForm.email" type="email" class="form-input" placeholder="请输入邮箱（可选）" />
           </div>
           <div class="form-group">
             <label>密码</label>
-            <input v-model="userForm.password" type="password" class="form-input" :placeholder="editingUser ? '留空则不修改' : '请输入密码'" />
+            <input v-model="userForm.password" type="password" class="form-input" placeholder="请输入密码" />
           </div>
           <div class="form-group">
             <label>角色</label>
@@ -233,16 +278,10 @@
               <option value="super_admin">超级管理员</option>
             </select>
           </div>
-          <div class="form-group checkbox">
-            <label>
-              <input v-model="userForm.is_active" type="checkbox" />
-              <span>启用状态</span>
-            </label>
-          </div>
         </div>
         <div class="modal-footer">
           <button class="secondary-btn" @click="showUserModal = false">取消</button>
-          <button class="primary-btn" @click="saveUser">保存</button>
+          <button class="primary-btn" @click="saveUser">创建</button>
         </div>
       </div>
     </div>
@@ -288,11 +327,78 @@
         </div>
       </div>
     </div>
+
+    <!-- 角色修改弹窗 -->
+    <div v-if="showRoleChangeModal" class="modal-overlay" @click.self="cancelRoleChange">
+      <div class="modal small">
+        <div class="modal-header">
+          <h3>修改用户权限</h3>
+          <button class="close-btn" @click="cancelRoleChange">×</button>
+        </div>
+        <div class="modal-body">
+          <p>修改用户 <strong>{{ roleChangeUser?.username }}</strong> 的权限：</p>
+          <div class="form-group">
+            <label>选择角色</label>
+            <select v-model="selectedRole" class="form-input">
+              <option value="user" :disabled="roleChangeUser?.role === 'user'">普通用户</option>
+              <option value="admin" :disabled="roleChangeUser?.role === 'admin'">管理员</option>
+            </select>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="cancelRoleChange">取消</button>
+          <button class="primary-btn" @click="confirmRoleChange" :disabled="selectedRole === roleChangeUser?.role">确认</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 对话详情弹窗 -->
+    <div v-if="showDetailModal" class="modal-overlay" @click.self="showDetailModal = false">
+      <div class="modal large">
+        <div class="modal-header">
+          <h3 class="detail-modal-title" :title="detailRequest?.chat_title">对话详情 - {{ truncateTitle(detailRequest?.chat_title) }}</h3>
+          <button class="close-btn" @click="showDetailModal = false">×</button>
+        </div>
+        <div class="modal-body">
+          <div v-if="detailRequest" class="detail-content">
+            <div class="detail-section">
+              <div class="detail-label">申请用户：</div>
+              <div class="detail-value">{{ detailRequest.username }}</div>
+            </div>
+            <div class="detail-section">
+              <div class="detail-label">申请时间：</div>
+              <div class="detail-value">{{ formatDate(detailRequest.created_at) }}</div>
+            </div>
+            <div v-if="detailRequest.reason" class="detail-section">
+              <div class="detail-label">申请理由：</div>
+              <div class="detail-value">{{ detailRequest.reason }}</div>
+            </div>
+            <div class="detail-section">
+              <div class="detail-label">完整对话内容：</div>
+              <div class="chat-full-preview">
+                <div
+                  v-for="(msg, idx) in detailRequest.messages_preview"
+                  :key="idx"
+                  class="detail-message"
+                >
+                  <div class="detail-msg-author">{{ msg.author_name }}</div>
+                  <div class="detail-msg-content">{{ msg.content }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button class="secondary-btn" @click="showDetailModal = false">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue';
+import { apiClient } from './api.js';
 
 const props = defineProps({
   currentUser: {
@@ -305,15 +411,15 @@ defineEmits(['back']);
 
 // 根据用户角色设置默认标签页
 const getDefaultTab = () => {
-  if (!props.currentUser) return 'requests';
+  if (!props.currentUser) return 'reviews';
 
   const role = props.currentUser.role || 'user';
   if (role === 'super_admin') {
     return 'users'; // 超级管理员默认显示用户管理
   } else if (role === 'admin') {
-    return 'requests'; // 管理员默认显示对话审核
+    return 'reviews'; // 管理员默认显示公开对话管理
   }
-  return 'requests';
+  return 'reviews';
 };
 
 // 标签页状态
@@ -332,17 +438,41 @@ const userForm = ref({
   is_active: true,
 });
 
+// 用户分页相关
+const userCurrentPage = ref(1);
+const userPageSize = ref(10);
+
+// 角色修改相关
+const showRoleChangeModal = ref(false);
+const roleChangeUser = ref(null);
+const selectedRole = ref('user');
+
 // 对话审核相关
 const allRequests = ref([]);
 const displayRequests = ref([]);
-const requestStatus = ref('pending');
+const requestStatus = ref('pending'); // 默认显示待审核
+const requestUserRole = ref('all'); // 角色筛选：all/user/admin
 const showRejectModal = ref(false);
 const rejectReason = ref('');
 const reviewingRequest = ref(null);
 const pendingCount = ref(0);
 
+// 对话详情弹窗
+const showDetailModal = ref(false);
+const detailRequest = ref(null);
+
 // 已公开对话
 const publicChats = ref([]);
+
+// 数据看板
+const stats = ref({
+  userCount: 0,
+  adminCount: 0,
+  threadCount: 0,
+  publishedCount: 0,
+  violationCount: 0,
+  commentCount: 0,
+});
 
 // 删除确认
 const showDeleteConfirm = ref(false);
@@ -359,6 +489,13 @@ function formatDate(dateStr) {
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+// 截断标题，超过60字显示省略号
+function truncateTitle(title, maxLength = 60) {
+  if (!title) return '';
+  if (title.length <= maxLength) return title;
+  return title.substring(0, maxLength) + '...';
 }
 
 // 获取角色显示名称
@@ -386,58 +523,166 @@ function getMockUsers() {
 
 // 过滤后的用户列表
 const filteredUsers = computed(() => {
-  if (!userSearch.value) return users.value;
+  // 先过滤掉当前超管用户（如果是超管的话）
+  let filtered = users.value;
+  if (props.currentUser?.role === 'super_admin') {
+    filtered = filtered.filter(u => u.id !== props.currentUser.user_id && u.id !== props.currentUser.id);
+  }
+
+  // 再按搜索关键词过滤
+  if (!userSearch.value) return filtered;
   const kw = userSearch.value.toLowerCase();
-  return users.value.filter(u =>
+  return filtered.filter(u =>
     u.username?.toLowerCase().includes(kw) ||
     u.email?.toLowerCase().includes(kw)
   );
 });
 
-// 加载用户列表
-function loadUsers() {
-  users.value = getMockUsers();
+// 分页后的用户列表
+const paginatedUsers = computed(() => {
+  const start = (userCurrentPage.value - 1) * userPageSize.value;
+  const end = start + userPageSize.value;
+  return filteredUsers.value.slice(start, end);
+});
+
+// 总页数
+const totalPages = computed(() => {
+  return Math.ceil(filteredUsers.value.length / userPageSize.value);
+});
+
+// 翻页方法
+function goToPage(page) {
+  if (page >= 1 && page <= totalPages.value) {
+    userCurrentPage.value = page;
+  }
 }
 
-// 编辑用户
-function editUser(user) {
-  editingUser.value = user;
+// 过滤用户时重置页码
+function filterUsers() {
+  userCurrentPage.value = 1;
+}
+
+// 加载用户列表
+async function loadUsers() {
+  try {
+    const result = await apiClient.request('/admin/users');
+    users.value = result.users || [];
+    // 确保user_id映射到id
+    users.value = users.value.map(u => ({
+      ...u,
+      id: u.user_id || u.id
+    }));
+  } catch (err) {
+    console.error('加载用户列表失败:', err);
+    alert('加载用户列表失败: ' + err.message);
+    // 如果API调用失败，使用模拟数据
+    users.value = getMockUsers();
+  }
+}
+
+// 打开新增用户弹窗
+function openAddUserModal() {
+  editingUser.value = null;
   userForm.value = {
-    username: user.username,
-    email: user.email,
+    username: '',
+    email: '',
     password: '',
-    role: user.role,
-    is_active: user.is_active,
+    role: 'user',
+    is_active: true
   };
   showUserModal.value = true;
 }
 
-// 保存用户
-function saveUser() {
-  if (!userForm.value.username || !userForm.value.email) {
-    alert('请填写用户名和邮箱');
+// 编辑用户（已移除）
+function editUser(user) {
+  // 编辑功能已禁用
+  alert('编辑用户信息功能已禁用\n请使用"权限"按钮修改用户角色');
+}
+
+// 修改用户角色 - 打开弹窗
+function openRoleChangeModal(user) {
+  roleChangeUser.value = user;
+  // 默认选择与当前不同的角色（只允许在 user 和 admin 之间切换）
+  if (user.role === 'user') {
+    selectedRole.value = 'admin';
+  } else {
+    selectedRole.value = 'user';
+  }
+  showRoleChangeModal.value = true;
+}
+
+// 确认修改角色
+async function confirmRoleChange() {
+  if (!roleChangeUser.value) return;
+
+  const user = roleChangeUser.value;
+  const newRole = selectedRole.value;
+
+  const roleMap = {
+    'user': '普通用户',
+    'admin': '管理员'
+  };
+
+  try {
+    await apiClient.request(`/admin/users/${user.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role: newRole })
+    });
+    // 更新本地状态
+    user.role = newRole;
+    showRoleChangeModal.value = false;
+    roleChangeUser.value = null;
+  } catch (err) {
+    console.error('修改角色失败:', err);
+    alert('修改角色失败: ' + err.message);
+  }
+}
+
+// 取消修改角色
+function cancelRoleChange() {
+  showRoleChangeModal.value = false;
+  roleChangeUser.value = null;
+  selectedRole.value = 'user';
+}
+
+// 保存用户（仅新增）
+async function saveUser() {
+  if (!userForm.value.username || !userForm.value.password) {
+    alert('请填写用户名和密码');
     return;
   }
 
-  if (editingUser.value) {
-    // 更新用户
-    const idx = users.value.findIndex(u => u.id === editingUser.value.id);
-    if (idx !== -1) {
-      users.value[idx] = { ...users.value[idx], ...userForm.value };
-    }
-  } else {
+  try {
     // 新增用户
-    if (!userForm.value.password) {
-      alert('新用户必须设置密码');
-      return;
-    }
-    users.value.push({
-      id: crypto.randomUUID(),
-      ...userForm.value,
-      created_at: new Date().toISOString(),
+    const result = await apiClient.request('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({
+        username: userForm.value.username,
+        password: userForm.value.password,
+        email: userForm.value.email || '',
+        role: userForm.value.role || 'user',
+        is_active: true
+      })
     });
+
+    // 添加到本地列表
+    users.value.push({
+      id: result.user.user_id,
+      username: result.user.username,
+      email: result.user.email,
+      role: result.user.role,
+      is_active: result.user.is_active,
+      created_at: new Date().toISOString()
+    });
+
+    showUserModal.value = false;
+    editingUser.value = null;
+    userForm.value = { username: '', email: '', password: '', role: 'user', is_active: true };
+    alert('✅ 用户创建成功');
+  } catch (err) {
+    console.error('保存用户失败:', err);
+    alert('保存用户失败: ' + err.message);
   }
-  showUserModal.value = false;
 }
 
 // 确认删除用户
@@ -447,11 +692,58 @@ function confirmDeleteUser(user) {
 }
 
 // 删除用户
-function deleteUser() {
+async function deleteUser() {
   if (!userToDelete.value) return;
-  users.value = users.value.filter(u => u.id !== userToDelete.value.id);
-  showDeleteConfirm.value = false;
-  userToDelete.value = null;
+
+  try {
+    await apiClient.request(`/admin/users/${userToDelete.value.id}`, {
+      method: 'DELETE'
+    });
+    // 从列表中移除
+    users.value = users.value.filter(u => u.id !== userToDelete.value.id);
+    showDeleteConfirm.value = false;
+    alert('✅ 用户已删除');
+  } catch (err) {
+    console.error('删除用户失败:', err);
+    alert('删除用户失败: ' + err.message);
+  } finally {
+    userToDelete.value = null;
+  }
+}
+
+// 封禁用户
+async function banUser(user) {
+  if (!confirm(`确定要封禁用户"${user.username}"吗？`)) return;
+
+  try {
+    await apiClient.request(`/admin/users/${user.id}/ban`, {
+      method: 'PUT',
+      body: JSON.stringify({})
+    });
+    // 更新本地状态
+    user.is_active = false;
+    alert('✅ 用户已被封禁');
+  } catch (err) {
+    console.error('封禁用户失败:', err);
+    alert('封禁失败: ' + err.message);
+  }
+}
+
+// 解禁用户
+async function unbanUser(user) {
+  if (!confirm(`确定要解禁用户"${user.username}"吗？`)) return;
+
+  try {
+    await apiClient.request(`/admin/users/${user.id}/unban`, {
+      method: 'PUT'
+    });
+    // 更新本地状态
+    user.is_active = true;
+    alert('✅ 用户已解禁');
+  } catch (err) {
+    console.error('解禁用户失败:', err);
+    alert('解禁失败: ' + err.message);
+  }
 }
 
 // 测试请求数据
@@ -529,19 +821,53 @@ function getMockRequests() {
 }
 
 // 加载公开请求
-function loadRequests() {
-  allRequests.value = getMockRequests();
-  filterRequests();
-  updatePendingCount();
+async function loadRequests() {
+  try {
+    // 如果是超级管理员，传递角色筛选参数
+    const params = new URLSearchParams({ status: requestStatus.value });
+    if (props.currentUser?.role === 'super_admin' && requestUserRole.value !== 'all') {
+      params.append('user_role', requestUserRole.value);
+    }
+
+    const result = await apiClient.request(`/admin/publication-requests?${params.toString()}`);
+    allRequests.value = result.requests || [];
+    filterRequests();
+    updatePendingCount();
+  } catch (err) {
+    console.error('加载公开请求失败:', err);
+    // 如果API调用失败，使用模拟数据
+    allRequests.value = getMockRequests();
+    filterRequests();
+    updatePendingCount();
+  }
+}
+
+// 处理筛选条件变化
+function handleFilterChange() {
+  // 重新加载数据并过滤
+  loadRequests();
 }
 
 // 过滤请求
 function filterRequests() {
-  if (requestStatus.value === 'all') {
-    displayRequests.value = allRequests.value;
-  } else {
-    displayRequests.value = allRequests.value.filter(r => r.status === requestStatus.value);
+  let filtered = allRequests.value;
+
+  // 按状态筛选
+  if (requestStatus.value !== 'all') {
+    filtered = filtered.filter(r => r.status === requestStatus.value);
   }
+
+  // 按角色筛选（仅超级管理员）
+  if (props.currentUser?.role === 'super_admin' && requestUserRole.value !== 'all') {
+    filtered = filtered.filter(r => r.user_role === requestUserRole.value);
+  }
+
+  // 管理员只能看到普通用户的申请
+  if (props.currentUser?.role === 'admin') {
+    filtered = filtered.filter(r => r.user_role === 'user');
+  }
+
+  displayRequests.value = filtered;
 }
 
 // 更新待审核数量
@@ -556,23 +882,47 @@ function openRejectModal(request) {
   showRejectModal.value = true;
 }
 
+// 打开详情弹窗
+function openDetailModal(request) {
+  detailRequest.value = request;
+  showDetailModal.value = true;
+}
+
 // 通过请求
-function approveRequest(request) {
+async function approveRequest(request) {
   if (!confirm(`确定通过对话"${request.chat_title}"的公开请求吗？`)) return;
-  request.status = 'approved';
-  request.reject_reason = '';
-  filterRequests();
-  updatePendingCount();
+
+  try {
+    await apiClient.request(`/admin/publication-requests/${request.id}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ approved: true, reason: '' })
+    });
+    // 重新加载列表以获取最新状态
+    await loadRequests();
+    alert('✅ 已通过审核');
+  } catch (err) {
+    console.error('审核失败:', err);
+    alert('审核失败: ' + err.message);
+  }
 }
 
 // 确认驳回
-function confirmReject() {
-  if (reviewingRequest.value) {
-    reviewingRequest.value.status = 'rejected';
-    reviewingRequest.value.reject_reason = rejectReason.value;
+async function confirmReject() {
+  if (!reviewingRequest.value) return;
+
+  try {
+    await apiClient.request(`/admin/publication-requests/${reviewingRequest.value.id}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ approved: false, reason: rejectReason.value })
+    });
+    // 重新加载列表以获取最新状态
+    await loadRequests();
     showRejectModal.value = false;
-    filterRequests();
-    updatePendingCount();
+    rejectReason.value = '';
+    alert('✅ 已驳回');
+  } catch (err) {
+    console.error('驳回失败:', err);
+    alert('驳回失败: ' + err.message);
   }
 }
 
@@ -590,11 +940,24 @@ function loadPublicChats() {
   publicChats.value = getMockPublicChats();
 }
 
+// 加载数据看板统计
+function loadDashboardStats() {
+  // 计算统计数据
+  const allUsers = getMockUsers();
+  stats.value.userCount = allUsers.filter(u => u.role === 'user').length;
+  stats.value.adminCount = allUsers.filter(u => u.role === 'admin').length; // 不包括超级管理员
+  stats.value.threadCount = getMockRequests().length + getMockPublicChats().length;
+}
+
 // 初始化加载
 onMounted(() => {
-  loadUsers();
+  // 只有超级管理员才加载用户列表
+  if (props.currentUser?.role === 'super_admin') {
+    loadUsers();
+  }
   loadRequests();
   loadPublicChats();
+  loadDashboardStats();
 });
 </script>
 
@@ -881,6 +1244,56 @@ onMounted(() => {
 .action-buttons {
   display: flex;
   gap: 8px;
+  align-items: center;
+}
+
+.action-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+
+.action-btn:hover {
+  background: rgba(255,255,255,.10);
+}
+
+.action-btn.ban {
+  border-color: rgba(255,107,107,.30);
+  background: rgba(255,107,107,.15);
+  color: #ff6b6b;
+}
+
+.action-btn.ban:hover {
+  border-color: rgba(255,107,107,.50);
+  background: rgba(255,107,107,.25);
+}
+
+.action-btn.unban {
+  border-color: rgba(81,209,138,.30);
+  background: rgba(81,209,138,.15);
+  color: #51d18a;
+}
+
+.action-btn.unban:hover {
+  border-color: rgba(81,209,138,.50);
+  background: rgba(81,209,138,.25);
+}
+
+.action-btn.role {
+  border-color: rgba(199,125,255,.30);
+  background: rgba(199,125,255,.15);
+  color: #c77dff;
+}
+
+.action-btn.role:hover {
+  border-color: rgba(199,125,255,.50);
+  background: rgba(199,125,255,.25);
 }
 
 .icon-btn {
@@ -904,6 +1317,92 @@ onMounted(() => {
   color: #ff6b6b;
 }
 
+/* 评论管理和数据看板 */
+.comments-section,
+.dashboard-section {
+  padding: 20px;
+}
+
+.comments-section h2,
+.dashboard-section h2 {
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 20px;
+}
+
+.info-text {
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+
+.placeholder-box {
+  padding: 40px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  text-align: center;
+}
+
+.placeholder-icon {
+  font-size: 48px;
+  margin-bottom: 16px;
+}
+
+.feature-list {
+  list-style: none;
+  padding: 0;
+  display: inline-block;
+  text-align: left;
+}
+
+.feature-list li {
+  padding: 8px 0;
+  color: var(--muted);
+}
+
+.feature-list li::before {
+  content: "• ";
+  color: #6aa7ff;
+  margin-right: 8px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 20px;
+}
+
+.stat-card {
+  padding: 24px;
+  border-radius: 16px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(255,255,255,.03);
+  text-align: center;
+}
+
+.stat-number {
+  font-size: 36px;
+  font-weight: 800;
+  color: #6aa7ff;
+  margin-bottom: 8px;
+}
+
+.stat-label {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* 标签布局 - 根据数量调整 */
+.tabs.three-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.tabs:not(.three-tabs) {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
 /* 空状态 */
 .empty-state {
   padding: 40px;
@@ -921,17 +1420,29 @@ onMounted(() => {
 .status-select {
   padding: 10px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(255,255,255,.10);
-  background: rgba(255,255,255,.05);
-  color: var(--text);
+  border: 1px solid rgba(106,167,255,.30);
+  background: rgba(106,167,255,.08);
+  color: #6aa7ff;
   outline: none;
   cursor: pointer;
+  font-weight: 600;
+  transition: all 0.2s ease;
 }
 
-.requests-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.status-select:hover {
+  border-color: rgba(106,167,255,.50);
+  background: rgba(106,167,255,.15);
+}
+
+.status-select:focus {
+  border-color: rgba(106,167,255,.60);
+  box-shadow: 0 0 0 3px rgba(106,167,255,.15);
+}
+
+.status-select option {
+  background: #1e1e2e;
+  color: var(--text);
+  padding: 8px;
 }
 
 .request-card {
@@ -1062,6 +1573,161 @@ onMounted(() => {
   border-color: rgba(255,107,107,.50);
 }
 
+/* 查看详情按钮 */
+.detail-btn {
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  border: 1px solid rgba(106,167,255,.30);
+  background: rgba(106,167,255,.18);
+  color: var(--text);
+}
+
+.detail-btn:hover {
+  border-color: rgba(106,167,255,.50);
+}
+
+/* 分页控件 */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding: 16px;
+}
+
+.pagination-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05);
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.pagination-btn:hover:not(:disabled) {
+  background: rgba(106,167,255,.15);
+  border-color: rgba(106,167,255,.30);
+}
+
+.pagination-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.pagination-info {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+/* 详情弹窗样式 */
+.detail-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.detail-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.detail-value {
+  font-size: 14px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.chat-full-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(0,0,0,.2);
+  max-height: 400px;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+/* 详情弹窗对话内容滚动条样式 */
+.chat-full-preview::-webkit-scrollbar {
+  width: 8px;
+}
+
+.chat-full-preview::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+}
+
+.chat-full-preview::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 4px;
+  transition: background 0.3s ease;
+}
+
+.chat-full-preview::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+/* 详情弹窗中的消息样式 - 完整显示，不截断 */
+.detail-message {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 16px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.detail-message:last-child {
+  padding-bottom: 0;
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+.detail-msg-author {
+  font-size: 14px;
+  font-weight: 700;
+  color: #6aa7ff;
+  flex-shrink: 0;
+}
+
+.detail-msg-content {
+  font-size: 14px;
+  line-height: 1.8;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  /* 确保文本不会被截断或省略 */
+  overflow: visible;
+  text-overflow: clip;
+  max-width: 100%;
+  display: block;
+  width: 100%;
+}
+
+/* 强制确保详情消息内容不受全局样式影响 */
+.detail-msg-content * {
+  white-space: pre-wrap !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
+}
+
 /* 公开对话列表 */
 .public-chats-list {
   display: flex;
@@ -1136,6 +1802,18 @@ onMounted(() => {
   max-width: 400px;
 }
 
+.modal.large {
+  max-width: 800px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal.large .modal-body {
+  overflow-y: auto;
+  max-height: calc(80vh - 140px);
+}
+
 .modal-header {
   display: flex;
   justify-content: space-between;
@@ -1148,6 +1826,14 @@ onMounted(() => {
   margin: 0;
   font-size: 16px;
   font-weight: 800;
+}
+
+/* 详情弹窗标题样式 - 超过60字显示省略号 */
+.detail-modal-title {
+  max-width: 700px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .close-btn {
@@ -1221,6 +1907,47 @@ onMounted(() => {
 /* ========== 浅色模式样式 ========== */
 :root[data-theme="light"] .admin {
   background: #f5f5f5;
+}
+
+/* 浅色模式下选择框选项样式 */
+:root[data-theme="light"] .status-select option {
+  background: #ffffff;
+  color: #000000;
+}
+
+/* 修复公开对话管理页面的滚动条 */
+.requests-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 20px;
+  overflow-y: auto;
+  max-height: calc(100vh - 200px);
+}
+
+.requests-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.requests-list::-webkit-scrollbar-thumb {
+  background-color: rgba(255,255,255,.2);
+  border-radius: 4px;
+}
+
+.requests-list::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255,255,255,.3);
+}
+
+:root[data-theme="light"] .requests-list::-webkit-scrollbar-thumb {
+  background-color: rgba(0,0,0,.2);
+}
+
+:root[data-theme="light"] .requests-list::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(0,0,0,.3);
+}
+
+:root[data-theme="light"] .requests-list {
+  max-height: calc(100vh - 200px);
 }
 
 :root[data-theme="light"] .topbar {
@@ -1301,6 +2028,11 @@ onMounted(() => {
   background: #ffffff;
   border-color: rgba(0, 0, 0, 0.15);
   color: #000000;
+}
+
+:root[data-theme="light"] .status-select:hover {
+  border-color: rgba(0, 0, 0, 0.25);
+  background: #f9f9f9;
 }
 
 :root[data-theme="light"] .search-input:focus,
@@ -1456,5 +2188,79 @@ onMounted(() => {
 :root[data-theme="light"] .icon-btn.danger:hover {
   background: rgba(255, 107, 107, 0.15);
   color: #ff6b6b;
+}
+
+/* 浅色模式下的分页控件 */
+:root[data-theme="light"] .pagination-btn {
+  background: #ffffff;
+  border-color: rgba(0, 0, 0, 0.15);
+  color: #000000;
+}
+
+:root[data-theme="light"] .pagination-btn:hover:not(:disabled) {
+  background: #f5f5f5;
+  border-color: rgba(106, 167, 255, 0.3);
+}
+
+:root[data-theme="light"] .pagination-info {
+  color: #666666;
+}
+
+/* 浅色模式下的详情按钮 */
+:root[data-theme="light"] .detail-btn {
+  background: rgba(106, 167, 255, 0.15);
+  border-color: rgba(106, 167, 255, 0.3);
+  color: #000000;
+}
+
+:root[data-theme="light"] .detail-btn:hover {
+  background: rgba(106, 167, 255, 0.25);
+  border-color: rgba(106, 167, 255, 0.5);
+}
+
+/* 浅色模式下的详情内容 */
+:root[data-theme="light"] .detail-label {
+  color: #666666;
+}
+
+:root[data-theme="light"] .detail-value {
+  color: #000000;
+}
+
+:root[data-theme="light"] .chat-full-preview {
+  background: #f5f5f5;
+}
+
+/* 浅色模式下的详情弹窗对话内容滚动条 */
+:root[data-theme="light"] .chat-full-preview::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+:root[data-theme="light"] .chat-full-preview::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+:root[data-theme="light"] .chat-full-preview::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* 浅色模式下的详情消息样式 */
+:root[data-theme="light"] .detail-message {
+  border-bottom-color: rgba(0, 0, 0, 0.1);
+}
+
+:root[data-theme="light"] .detail-msg-author {
+  color: #6a7dff;
+}
+
+:root[data-theme="light"] .detail-msg-content {
+  color: #000000;
+}
+
+/* 确保浅色模式下的消息内容也完整显示 */
+:root[data-theme="light"] .detail-msg-content * {
+  white-space: pre-wrap !important;
+  text-overflow: clip !important;
+  overflow: visible !important;
 }
 </style>

@@ -8,10 +8,24 @@
   --primary:#6aa7ff;
   --success:#51d18a;
   --warn:#ffcc66;
+  --home-bg:linear-gradient(135deg, rgba(17,26,51,0.95), rgba(10,16,34,0.98));
 }
 
 body{
   transition: background 0.3s ease;
+}
+
+:root[data-theme="light"] {
+  --bg:#ffffff;
+  --panel:#f7f7f7;
+  --panel2:#f0f0f0;
+  --text:#333333;
+  --muted:#666666;
+  --line:#e0e0e0;
+  --primary:#6aa7ff;
+  --success:#51d18a;
+  --warn:#ffcc66;
+  --home-bg:linear-gradient(135deg, #f5f7fa 0%, #e8ecf1 100%);
 }
 
 :root[data-theme="light"] body {

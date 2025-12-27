@@ -90,10 +90,38 @@
         class="moreBtn"
         :class="{ active: showMenuFor === c.id }"
         @click="toggleMenu(c.id)"
+        ref="moreBtn"
       >
         ⋯
       </button>
       <div v-if="showMenuFor === c.id" class="menuDropdown" @click.stop>
+        <template v-if="!c.publicationStatus || c.publicationStatus === 'draft'">
+          <button
+            v-if="currentUser?.role !== 'super_admin'"
+            class="menuItem"
+            @click="submitForPublication(c)"
+          >
+            <span class="menuIcon">📤</span> 申请公开
+          </button>
+          <button v-else class="menuItem disabled" disabled title="超级管理员不可申请公开">
+            <span class="menuIcon">📤</span> 申请公开
+          </button>
+        </template>
+        <template v-else-if="c.publicationStatus === 'pending'">
+          <button class="menuItem disabled" disabled>
+            <span class="menuIcon">⏳</span> 审核中
+          </button>
+        </template>
+        <template v-else-if="c.publicationStatus === 'published'">
+          <button class="menuItem published" @click="showPublishedChatInfo(c)">
+            <span class="menuIcon">✅</span> 已公开
+          </button>
+        </template>
+        <template v-else-if="c.publicationStatus === 'rejected'">
+          <button class="menuItem rejected" @click="showRejectionReason(c)">
+            <span class="menuIcon">❌</span> 已驳回
+          </button>
+        </template>
         <button class="menuItem" @click="startRename(c)">
           <span class="menuIcon">✏️</span> 重命名
         </button>
@@ -193,15 +221,6 @@
               <button class="authBtn ghostBtn" @click="showRegisterModal = true">注册</button>
               <button class="authBtn primaryBtn" @click="showLoginModal = true">登录</button>
             </template>
-            <!-- 已登录用户显示用户名和登出按钮 -->
-            <template v-else>
-              <span class="welcomeText" :class="currentUser.role">{{ currentUser.username }}</span>
-              <button class="authBtn ghostBtn" @click="handleLogout">登出</button>
-            </template>
-            <div class="status">
-              <span class="dot"></span>
-              <span>已连接</span>
-            </div>
           </div>
         </header>
 
@@ -237,7 +256,17 @@
             <button class="qclose" @click="quoted=null">×</button>
           </div>
 
-          <div class="inputRow">
+          <!-- 对话被锁定时的提示 -->
+          <div v-if="isChatLocked" class="inputRow locked-hint">
+            <div class="lock-info">
+              <span class="lock-icon">🔒</span>
+              <span v-if="activeChat.publicationStatus === 'pending'">对话已提交审核，暂时无法继续</span>
+              <span v-else-if="activeChat.publicationStatus === 'published'">对话已公开，无法继续编辑</span>
+            </div>
+          </div>
+
+          <!-- 正常输入框 -->
+          <div v-else class="inputRow">
             <div class="inputWrapper">
               <textarea
                 ref="inputRef"
@@ -443,6 +472,20 @@
             </div>
 
             <div class="settingsSection" v-if="currentUser">
+              <h4>账号</h4>
+              <div class="userInfo">
+                <span class="userNameLabel">当前用户：</span>
+                <span class="userName" :class="currentUser.role">
+                  {{ currentUser.username }}
+                </span>
+                <span class="userRoleBadge">({{ getRoleDisplayName(currentUser.role) }})</span>
+              </div>
+              <button class="logoutBtn" @click="handleLogout">
+                退出登录
+              </button>
+            </div>
+
+            <div class="settingsSection" v-if="currentUser">
               <h4>管理员</h4>
               <button class="adminEntryBtn" @click="goToAdmin">
                 进入管理后台
@@ -640,6 +683,29 @@ const user = computed(() => {
 const keyword = ref("");
 const showMenuFor = ref(null); // 当前显示菜单的对话ID
 const renameInput = ref(null); // 重命名输入框的引用
+
+// 全局点击监听 - 用于关闭三点菜单
+function handleClickOutside(event) {
+  // 如果点击的不是菜单按钮或菜单内部，则关闭菜单
+  if (showMenuFor.value !== null) {
+    const menuDropdown = document.querySelector('.menuDropdown');
+    const moreBtn = document.querySelector('.moreBtn.active');
+
+    if (menuDropdown && !menuDropdown.contains(event.target) &&
+        moreBtn && !moreBtn.contains(event.target)) {
+      showMenuFor.value = null;
+    }
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside);
+});
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside);
+});
+
 const members = [
   { id: "theorist", name: "理论家", short: "理", role: "体系化", color: "#6aa7ff", desc: "梳理知识框架，把概念讲清楚、讲完整。" },
   { id: "practitioner", name: "实践者", short: "实", role: "应用派", color: "#51d18a", desc: "用例子/代码/练习把知识落地。" },
@@ -864,6 +930,8 @@ async function loadChats() {
       pinned: chat.pinned || false,
       updatedAt: chat.updatedAt,
       messages: chat.messages || [],
+      publicationStatus: chat.publicationStatus || 'draft', // 默认为草稿状态
+      rejectionReason: chat.rejectionReason || '', // 驳回原因
     }));
   } catch (err) {
     console.error('加载对话列表失败:', err);
@@ -892,6 +960,8 @@ async function createChat(topic) {
         time: msg.timestamp,
         role: msg.role
       })),
+      publicationStatus: 'draft', // 新对话默认为草稿状态
+      rejectionReason: '',
     };
     // 添加到聊天列表
     chats.value = [newChat, ...chats.value];
@@ -973,6 +1043,9 @@ async function loadChatMessages(chatId) {
         role: msg.role
       }));
       chat.updatedAt = result.updated_at || stamp();
+      // 更新发布状态和驳回原因
+      chat.publicationStatus = result.publication_status || 'draft';
+      chat.rejectionReason = result.rejection_reason || '';
     }
   } catch (err) {
     console.error('加载对话消息失败:', err);
@@ -1058,7 +1131,8 @@ const activeChat = computed(() => {
       title: '暂无对话',
       pinned: false,
       updatedAt: stamp(),
-      messages: []
+      messages: [],
+      publicationStatus: 'draft'
     };
   }
   return chats.value.find((c) => c.id === activeChatId.value) || {
@@ -1066,8 +1140,15 @@ const activeChat = computed(() => {
     title: '暂无对话',
     pinned: false,
     updatedAt: stamp(),
-    messages: []
+    messages: [],
+    publicationStatus: 'draft'
   };
+});
+
+// 判断当前对话是否被锁定（已提交审核或已公开）
+const isChatLocked = computed(() => {
+  const status = activeChat.value?.publicationStatus;
+  return status === 'pending' || status === 'published';
 });
 
 // 输入框占位符
@@ -1184,6 +1265,12 @@ async function handleHomeSend() {
 async function send() {
   const text = draft.value.trim();
   if (!text || isSending.value || isCreating.value) return;
+
+  // 检查对话是否被锁定
+  if (isChatLocked.value) {
+    alert('对话已锁定，无法继续发送消息');
+    return;
+  }
 
   // 如果没有活跃对话或对话为空，创建新对话
   if (!activeChat.value || activeChat.value.id === 'empty') {
@@ -1372,6 +1459,12 @@ async function askAI(isAutoTriggered = false) {
     return;
   }
 
+  // 检查对话是否被锁定
+  if (isChatLocked.value) {
+    alert('对话已锁定，无法继续发送消息');
+    return;
+  }
+
   // 清空输入框（如果用户输入了内容）
   if (!isAutoTriggered) {
     const text = draft.value.trim();
@@ -1460,6 +1553,12 @@ async function askAI(isAutoTriggered = false) {
  */
 async function handleSendOrContinue() {
   if (isSending.value || isCreating.value) return;
+
+  // 检查对话是否被锁定
+  if (isChatLocked.value) {
+    alert('对话已锁定，无法继续发送消息');
+    return;
+  }
 
   const text = draft.value.trim();
 
@@ -1551,8 +1650,11 @@ function goToAdmin() {
 
   // 检查用户角色
   const role = currentUser.value.role || 'user';
-  if (role === 'guest' || role === 'user') {
-    alert('您没有权限访问管理后台');
+  console.log('当前用户角色:', role); // 调试日志
+
+  // 只有管理员和超级管理员可以进入
+  if (role !== 'admin' && role !== 'super_admin') {
+    alert('您没有权限访问管理后台\n需要管理员或超级管理员权限');
     return;
   }
 
@@ -1657,6 +1759,19 @@ async function handleRegister() {
   } catch (err) {
     formError.value = err.message || '注册失败，请重试';
   }
+}
+
+/**
+ * 获取角色显示名称
+ */
+function getRoleDisplayName(role) {
+  const roleMap = {
+    'guest': '游客',
+    'user': '普通用户',
+    'admin': '管理员',
+    'super_admin': '超级管理员'
+  };
+  return roleMap[role] || role;
 }
 
 /**
@@ -2169,6 +2284,54 @@ async function confirmDeleteSingle(chat) {
 }
 
 /**
+ * 提交对话公开申请
+ */
+async function submitForPublication(chat) {
+  // 关闭菜单
+  showMenuFor.value = null;
+
+  if (!confirm(`📤 确定要申请公开对话"${chat.title}"吗？\n提交后将进入审核流程，对话将被锁定。`)) {
+    return;
+  }
+
+  try {
+    // 调用API提交公开申请
+    await apiClient.publishChat(chat.id);
+    // 更新对话状态
+    chat.publicationStatus = 'pending';
+    alert('✅ 已提交公开申请，等待管理员审核');
+  } catch (err) {
+    console.error('提交公开申请失败:', err);
+    alert('提交失败: ' + err.message);
+  }
+}
+
+/**
+ * 查看驳回原因
+ */
+function showRejectionReason(chat) {
+  // 关闭菜单
+  showMenuFor.value = null;
+
+  if (chat.rejectionReason) {
+    alert(`❌ 驳回原因:\n\n${chat.rejectionReason}`);
+  } else {
+    alert('❌ 对话公开申请已被驳回');
+  }
+}
+
+/**
+ * 查看已公开对话提示
+ */
+function showPublishedChatInfo(chat) {
+  // 关闭菜单
+  showMenuFor.value = null;
+
+  // TODO: 跳转到公开对话详情页
+  alert(`📖 对话"${chat.title}"已公开\n此功能将在后续版本中实现`);
+}
+
+/**
  * 确认删除所有对话
  */
 async function confirmDeleteAll() {
@@ -2483,11 +2646,12 @@ html, body {
   flex-shrink: 0;
 }
 .uAvatar{
-  width:38px;height:38px;border-radius:14px;
+  width:38px;height:38px;border-radius:50%;
   display:grid;place-items:center;
   font-weight:900;
   border:1px solid rgba(255,255,255,.18);
   background: rgba(255,255,255,.06);
+  overflow: hidden;
 }
 
 /* 管理员和超级管理员头像框颜色 */
@@ -2562,7 +2726,7 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, rgba(17,26,51,0.95), rgba(10,16,34,0.98));
+  background: var(--home-bg);
 }
 
 .homeContent {
@@ -2769,6 +2933,23 @@ html, body {
   display:flex;
   gap:10px;
   align-items:flex-end;
+}
+.inputRow.locked-hint {
+  justify-content: center;
+  padding: 20px;
+  background: rgba(255, 107, 107, 0.08);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 107, 107, 0.2);
+}
+.lock-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.lock-icon {
+  font-size: 20px;
 }
 .inputWrapper{
   flex:1;
@@ -3257,6 +3438,7 @@ html, body {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  border-radius: 50%;
 }
 
 /* ========== 账号管理左右分栏样式 ========== */
@@ -3475,6 +3657,68 @@ html, body {
 .adminEntryBtn:hover {
   filter: brightness(1.05);
   border-color: rgba(199,125,255,.40);
+}
+
+/* 用户信息显示 */
+.userInfo {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 0;
+}
+
+.userNameLabel {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.userName {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.userName.user {
+  color: var(--text);
+}
+
+.userName.admin {
+  color: #c77dff; /* 紫色 */
+  text-shadow: 0 0 10px rgba(199, 125, 255, 0.3);
+}
+
+.userName.super_admin {
+  background: linear-gradient(135deg, #ffc757 0%, #ffb347 50%, #ff9500 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  font-weight: 800;
+  filter: drop-shadow(0 0 8px rgba(255, 199, 87, 0.5));
+}
+
+.userRoleBadge {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: normal;
+}
+
+/* 退出登录按钮 */
+.logoutBtn {
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,102,102,.25);
+  background: rgba(255,102,102,.15);
+  color: #ff8888;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .18s ease;
+  width: 100%;
+}
+
+.logoutBtn:hover {
+  filter: brightness(1.05);
+  border-color: rgba(255,102,102,.45);
+  background: rgba(255,102,102,.25);
 }
 
 /* 设置提示 */
@@ -3796,6 +4040,19 @@ html, body {
   transform: translateY(-1px);
 }
 
+/* 浅色模式下的退出登录按钮 */
+:root[data-theme="light"] .logoutBtn {
+  background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+  border-color: #e53935;
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(229, 57, 53, 0.3);
+}
+
+:root[data-theme="light"] .logoutBtn:hover {
+  box-shadow: 0 4px 12px rgba(229, 57, 53, 0.4);
+  transform: translateY(-1px);
+}
+
 /* 浅色模式下的数据管理按钮 */
 :root[data-theme="light"] .exportBtn {
   background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
@@ -3928,6 +4185,32 @@ html, body {
 
 .menuItem.delete:hover {
   background: rgba(255,102,102,.12);
+}
+
+.menuItem.published {
+  color: #51d18a;
+}
+
+.menuItem.published:hover {
+  background: rgba(81,209,138,.12);
+}
+
+.menuItem.rejected {
+  color: #ff8888;
+}
+
+.menuItem.rejected:hover {
+  background: rgba(255,102,102,.12);
+}
+
+.menuItem.disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.menuItem.disabled:hover {
+  background: transparent;
 }
 
 .menuIcon {

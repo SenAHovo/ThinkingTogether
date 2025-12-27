@@ -14,7 +14,7 @@ import io
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Header, Depends
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Header, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -260,10 +260,19 @@ def load_session_from_db(chat_id: str):
 
         # 获取线程信息
         with _db_manager.get_cursor() as cursor:
-            cursor.execute("SELECT topic, user_id FROM threads WHERE thread_id = %s", (chat_id,))
+            cursor.execute("""
+                SELECT t.topic, t.user_id,
+                       COALESCE(`to`.publication_status, 'draft') as publication_status,
+                       COALESCE(`to`.rejection_reason, '') as rejection_reason
+                FROM threads t
+                LEFT JOIN thread_owners `to` ON t.thread_id = `to`.thread_id
+                WHERE t.thread_id = %s
+            """, (chat_id,))
             thread_info = cursor.fetchone()
             topic = thread_info.get('topic') if thread_info else "历史对话"
             thread_user_id = thread_info.get('user_id')  # 获取用户ID
+            publication_status = thread_info.get('publication_status', 'draft')
+            rejection_reason = thread_info.get('rejection_reason', '')
 
         # 初始化状态
         state = init_state(thread_id=chat_id, topic=topic)
@@ -329,6 +338,8 @@ def load_session_from_db(chat_id: str):
             "created_at": get_timestamp(),
             "updated_at": get_timestamp(),
             "messages": messages,
+            "publication_status": publication_status,  # 发布状态
+            "rejection_reason": rejection_reason,  # 驳回原因
         }
 
         print(f"[API] 从数据库加载会话: {chat_id}, {len(messages)} 条消息")
@@ -366,6 +377,78 @@ def load_all_sessions_from_db():
     except Exception as e:
         print(f"[API] 批量加载会话失败: {e}")
         return 0
+
+
+def generate_ai_response_in_background(
+    chat_id: str,
+    thread_id: str,
+    topic: str,
+    user_id: Optional[str],
+    is_guest: bool,
+    state: DiscussionState,
+    organizer
+):
+    """后台任务：生成AI响应（不阻塞API响应）"""
+    try:
+        print(f"[后台任务] 开始生成AI响应: {chat_id}")
+
+        # 获取历史记录
+        history = history_store.tail(thread_id, 12) if not is_guest else []
+
+        # 组织者路由决定下一个发言者
+        decision = organizer.route(state, history)
+        next_speaker = decision["next_speaker"]
+        task_hint = decision["task_hint"]
+        stance_hint = decision.get("stance_hint")
+
+        # 调用智能体生成发言
+        utterance = call_companion(
+            speaker=next_speaker,
+            state=state,
+            task_hint=task_hint,
+            stance_hint=stance_hint,
+            tail_n=6,
+        )
+
+        # 记录发言（非游客才保存到历史）
+        if not is_guest:
+            history_store.record_speaker(thread_id, next_speaker, utterance)
+        advance_turn(state, next_speaker)
+
+        # 更新状态
+        patch = organizer.update_from_new_public_event(state, history_store.tail(thread_id, 12) if not is_guest else [])
+        apply_patch(state, patch)
+
+        # 映射角色ID
+        role_id_map = {
+            "理论家": "theorist",
+            "实践者": "practitioner",
+            "质疑者": "skeptic",
+            "组织者": "facilitator",
+        }
+        first_agent_id = role_id_map.get(next_speaker, "theorist")
+
+        # 更新会话消息
+        if chat_id in sessions:
+            sessions[chat_id]["messages"].append({
+                "message_id": uuid.uuid4().hex,
+                "chat_id": chat_id,
+                "author_id": first_agent_id,
+                "author_name": next_speaker,
+                "content": utterance,
+                "timestamp": get_current_time(),
+                "role": next_speaker,
+            })
+            sessions[chat_id]["updated_at"] = get_timestamp()
+
+            # 通过 WebSocket 推送新消息（如果有连接）
+            # 这里需要实现 WebSocket 推送逻辑
+
+        print(f"[后台任务] AI响应生成完成: {chat_id}")
+    except Exception as e:
+        print(f"[后台任务] 生成AI响应失败: {chat_id}, 错误: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def call_companion(
@@ -863,9 +946,10 @@ async def change_password(
 @app.post("/api/chats")
 async def create_chat(
     request: CreateChatRequest,
+    background_tasks: BackgroundTasks,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
-    """创建新对话"""
+    """创建新对话（使用后台任务生成AI响应，避免阻塞API）"""
     thread_id = uuid.uuid4().hex[:12]
     chat_id = thread_id
     topic = request.topic
@@ -923,51 +1007,14 @@ async def create_chat(
         set_agenda(state, agenda_items, active_item_id)
         state.phase = "discussion"
 
-    # ========== 自动调用下一个智能体发言（游客和登录用户都执行） ==========
-    # 获取历史记录（游客为空，登录用户从数据库获取）
-    history = history_store.tail(thread_id, 12) if not is_guest else []
-
-    # 组织者路由决定下一个发言者
-    decision = organizer.route(state, history)
-    next_speaker = decision["next_speaker"]
-    task_hint = decision["task_hint"]
-    stance_hint = decision.get("stance_hint")
-
-    # 调用智能体生成发言
-    utterance = call_companion(
-        speaker=next_speaker,
-        state=state,
-        task_hint=task_hint,
-        stance_hint=stance_hint,
-        tail_n=6,
-    )
-
-    # 记录发言（非游客才保存到历史）
-    if not is_guest:
-        history_store.record_speaker(thread_id, next_speaker, utterance)
-    advance_turn(state, next_speaker)
-
-    # 更新状态
-    patch = organizer.update_from_new_public_event(state, history_store.tail(thread_id, 12) if not is_guest else [])
-    apply_patch(state, patch)
-
-    # 映射角色ID
-    role_id_map = {
-        "理论家": "theorist",
-        "实践者": "practitioner",
-        "质疑者": "skeptic",
-        "组织者": "facilitator",
-    }
-    first_agent_id = role_id_map.get(next_speaker, "theorist")
-
-    # 存储会话（添加 user_id 用于过滤）
+    # 存储会话（立即返回，不等待AI生成）
     sessions[chat_id] = {
         "chat_id": chat_id,
         "thread_id": thread_id,
-        "title": topic,  # 直接使用 topic 作为 title，不添加"主题："前缀
+        "title": topic,  # 直接使用 topic 作为 title
         "topic": topic,
-        "user_id": user_id,  # 添加用户ID到会话
-        "is_guest": is_guest,  # 添加游客标识
+        "user_id": user_id,
+        "is_guest": is_guest,
         "state": state,
         "organizer": organizer,
         "created_at": get_timestamp(),
@@ -992,24 +1039,28 @@ async def create_chat(
                 "role": "组织者",
             },
         ],
+        "publication_status": "draft",
+        "rejection_reason": "",
     }
 
-    # 添加第一个智能体的发言消息（游客和登录用户都添加）
-    sessions[chat_id]["messages"].append({
-        "message_id": uuid.uuid4().hex,
-        "chat_id": chat_id,
-        "author_id": first_agent_id,
-        "author_name": next_speaker,
-        "content": utterance,
-        "timestamp": get_current_time(),
-        "role": next_speaker,
-    })
+    # 添加后台任务：异步生成AI响应
+    background_tasks.add_task(
+        generate_ai_response_in_background,
+        chat_id,
+        thread_id,
+        topic,
+        user_id,
+        is_guest,
+        state,
+        organizer
+    )
 
+    # 立即返回，不等待AI生成完成
     return {
         "chat_id": chat_id,
         "title": title,
-        "created_at": sessions[chat_id]["created_at"],
-        "updated_at": sessions[chat_id]["updated_at"],
+        "topic": topic,
+        "created_at": get_timestamp(),
         "messages": sessions[chat_id]["messages"],
     }
 
@@ -1047,6 +1098,8 @@ async def get_chats(
                         "updatedAt": session["updated_at"],
                         "messages": session["messages"],
                         "messageCount": len(session["messages"]),
+                        "publicationStatus": session.get("publication_status", "draft"),
+                        "rejectionReason": session.get("rejection_reason", ""),
                     }
                     # 关键词过滤
                     if keyword:
@@ -1077,6 +1130,8 @@ async def get_chats(
                 "updatedAt": session["updated_at"],
                 "messages": session["messages"],
                 "messageCount": len(session["messages"]),
+                "publicationStatus": session.get("publication_status", "draft"),
+                "rejectionReason": session.get("rejection_reason", ""),
             }
             # 关键词过滤
             if keyword:
@@ -1204,8 +1259,14 @@ async def get_messages(chat_id: str, limit: int = 100, before: Optional[str] = N
     session = get_session(chat_id)
     messages = session["messages"]
 
-    # 简单的分页（before未实现，可以后续扩展）
-    return {"messages": messages[-limit:], "total": len(messages)}
+    # 返回消息、更新时间和发布状态
+    return {
+        "messages": messages[-limit:],
+        "total": len(messages),
+        "updated_at": session.get("updated_at"),
+        "publication_status": session.get("publication_status", "draft"),
+        "rejection_reason": session.get("rejection_reason", "")
+    }
 
 
 @app.post("/api/messages")
@@ -1626,6 +1687,521 @@ async def websocket_endpoint(websocket: WebSocket, chat_id: str):
     except Exception as e:
         if chat_id in active_websockets:
             del active_websockets[chat_id]
+
+
+# ========== 管理员 API ==========
+
+# Pydantic 模型
+class BanUserRequest(BaseModel):
+    reason: Optional[str] = None
+    duration_days: Optional[int] = None
+
+
+class UpdateRoleRequest(BaseModel):
+    role: str  # 'user', 'admin', 'super_admin'
+
+
+def require_admin(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """验证管理员权限"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+    if current_user.get("role") not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return current_user
+
+
+def require_super_admin(current_user: Optional[Dict[str, Any]] = Depends(get_current_user)):
+    """验证超级管理员权限"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+    if current_user.get("role") != "super_admin":
+        raise HTTPException(status_code=403, detail="需要超级管理员权限")
+    return current_user
+
+
+@app.get("/api/admin/users")
+async def get_users(
+    keyword: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """获取所有用户列表（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            if keyword:
+                # 搜索用户
+                cursor.execute("""
+                    SELECT user_id, username, email, role, is_active, is_verified, created_at, updated_at
+                    FROM users
+                    WHERE username LIKE %s OR email LIKE %s
+                    ORDER BY created_at DESC
+                """, (f"%{keyword}%", f"%{keyword}%"))
+            else:
+                # 获取所有用户
+                cursor.execute("""
+                    SELECT user_id, username, email, role, is_active, is_verified, created_at, updated_at
+                    FROM users
+                    ORDER BY created_at DESC
+                """)
+            users = cursor.fetchall()
+
+            return {"users": users, "total": len(users)}
+    except Exception as e:
+        print(f"[API] 获取用户列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取用户列表失败")
+
+
+@app.post("/api/admin/users")
+async def create_user(
+    user_data: dict,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """创建新用户（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        username = user_data.get("username")
+        password = user_data.get("password")
+        email = user_data.get("email")
+        role = user_data.get("role", "user")
+        is_active = user_data.get("is_active", True)
+
+        # 验证输入
+        if not username or not password:
+            raise HTTPException(status_code=400, detail="用户名和密码不能为空")
+        if len(username) < 3:
+            raise HTTPException(status_code=400, detail="用户名至少3个字符")
+        if len(password) < 6:
+            raise HTTPException(status_code=400, detail="密码至少6个字符")
+        if role not in ["user", "admin", "super_admin"]:
+            raise HTTPException(status_code=400, detail="无效的角色")
+
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户名是否已存在
+            cursor.execute("SELECT user_id FROM users WHERE username = %s", (username,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="用户名已存在")
+
+            # 检查邮箱是否已存在
+            if email:
+                cursor.execute("SELECT user_id FROM users WHERE email = %s", (email,))
+                if cursor.fetchone():
+                    raise HTTPException(status_code=400, detail="邮箱已被注册")
+
+            # 创建用户
+            user_id = generate_user_id()
+            password_hash = hash_password(password)
+
+            cursor.execute("""
+                INSERT INTO users (user_id, username, email, password_hash, role, is_active, is_verified)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, username, email, password_hash, role, is_active, False))
+
+            print(f"[API] 创建用户成功: {username} (role: {role})")
+
+            return {
+                "message": "用户创建成功",
+                "user": {
+                    "user_id": user_id,
+                    "username": username,
+                    "email": email,
+                    "role": role,
+                    "is_active": is_active
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 创建用户失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"创建用户失败: {str(e)}")
+
+
+@app.put("/api/admin/users/{user_id}")
+async def update_user(
+    user_id: str,
+    user_data: dict,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """更新用户信息（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户是否存在
+            cursor.execute("SELECT user_id FROM users WHERE user_id = %s", (user_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            # 构建更新字段
+            update_fields = []
+            params = []
+
+            if "username" in user_data:
+                new_username = user_data["username"]
+                # 检查用户名是否已被其他用户使用
+                cursor.execute(
+                    "SELECT user_id FROM users WHERE username = %s AND user_id != %s",
+                    (new_username, user_id)
+                )
+                if cursor.fetchone():
+                    raise HTTPException(status_code=400, detail="用户名已被使用")
+                update_fields.append("username = %s")
+                params.append(new_username)
+
+            if "email" in user_data:
+                update_fields.append("email = %s")
+                params.append(user_data["email"])
+
+            if "role" in user_data:
+                role = user_data["role"]
+                if role not in ["user", "admin", "super_admin"]:
+                    raise HTTPException(status_code=400, detail="无效的角色")
+                update_fields.append("role = %s")
+                params.append(role)
+
+            if "is_active" in user_data:
+                update_fields.append("is_active = %s")
+                params.append(user_data["is_active"])
+
+            if not update_fields:
+                raise HTTPException(status_code=400, detail="没有要更新的字段")
+
+            # 添加更新时间和用户ID
+            params.append(datetime.now())
+            params.append(user_id)
+
+            # 执行更新
+            query = f"UPDATE users SET {', '.join(update_fields)}, updated_at = %s WHERE user_id = %s"
+            cursor.execute(query, params)
+
+            print(f"[API] 更新用户成功: {user_id}")
+
+            return {"message": "用户信息已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 更新用户失败: {e}")
+        raise HTTPException(status_code=500, detail="更新用户失败")
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def delete_user(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """删除用户（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        # 不能删除自己
+        if user_id == current_user["user_id"]:
+            raise HTTPException(status_code=400, detail="不能删除自己")
+
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户是否存在
+            cursor.execute("SELECT username FROM users WHERE user_id = %s", (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            # 删除用户（外键会自动级联删除相关数据）
+            cursor.execute("DELETE FROM users WHERE user_id = %s", (user_id,))
+
+            print(f"[API] 删除用户成功: {user['username']}")
+
+            return {"message": "用户已删除"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 删除用户失败: {e}")
+        raise HTTPException(status_code=500, detail="删除用户失败")
+
+
+@app.put("/api/admin/users/{user_id}/ban")
+async def ban_user(
+    user_id: str,
+    ban_data: BanUserRequest,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """封禁用户（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        # 不能封禁自己
+        if user_id == current_user["user_id"]:
+            raise HTTPException(status_code=400, detail="不能封禁自己")
+
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户是否存在
+            cursor.execute("SELECT username, is_active FROM users WHERE user_id = %s", (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            if not user["is_active"]:
+                raise HTTPException(status_code=400, detail="用户已被封禁")
+
+            # 封禁用户
+            cursor.execute(
+                "UPDATE users SET is_active = FALSE, updated_at = %s WHERE user_id = %s",
+                (datetime.now(), user_id)
+            )
+
+            print(f"[API] 封禁用户成功: {user['username']}")
+
+            return {"message": "用户已被封禁"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 封禁用户失败: {e}")
+        raise HTTPException(status_code=500, detail="封禁用户失败")
+
+
+@app.put("/api/admin/users/{user_id}/unban")
+async def unban_user(
+    user_id: str,
+    current_user: Dict[str, Any] = Depends(require_super_admin)
+):
+    """解禁用户（仅超级管理员）"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查用户是否存在
+            cursor.execute("SELECT username, is_active FROM users WHERE user_id = %s", (user_id,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="用户不存在")
+
+            if user["is_active"]:
+                raise HTTPException(status_code=400, detail="用户状态正常")
+
+            # 解禁用户
+            cursor.execute(
+                "UPDATE users SET is_active = TRUE, updated_at = %s WHERE user_id = %s",
+                (datetime.now(), user_id)
+            )
+
+            print(f"[API] 解禁用户成功: {user['username']}")
+
+            return {"message": "用户已解禁"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 解禁用户失败: {e}")
+        raise HTTPException(status_code=500, detail="解禁用户失败")
+
+
+@app.post("/api/chats/{chat_id}/publish")
+async def publish_chat(
+    chat_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """提交对话公开申请"""
+    if not current_user:
+        raise HTTPException(status_code=401, detail="未登录")
+
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查对话是否存在且属于当前用户
+            cursor.execute("""
+                SELECT thread_id FROM threads
+                WHERE thread_id = %s AND user_id = %s
+            """, (chat_id, current_user["user_id"]))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="对话不存在或无权操作")
+
+            # 检查thread_owners表中是否已有记录
+            cursor.execute("""
+                SELECT publication_status FROM thread_owners
+                WHERE thread_id = %s
+            """, (chat_id,))
+            owner = cursor.fetchone()
+
+            if owner:
+                if owner["publication_status"] != "draft":
+                    raise HTTPException(status_code=400, detail="对话已提交审核或已公开")
+                # 更新为待审核状态
+                cursor.execute("""
+                    UPDATE thread_owners
+                    SET publication_status = 'pending',
+                        submitted_for_review_at = %s,
+                        is_locked = TRUE
+                    WHERE thread_id = %s
+                """, (datetime.now(), chat_id))
+            else:
+                # 创建新的thread_owners记录
+                cursor.execute("""
+                    INSERT INTO thread_owners (thread_id, user_id, is_public, publication_status, submitted_for_review_at, is_locked)
+                    VALUES (%s, %s, FALSE, 'pending', %s, TRUE)
+                """, (chat_id, current_user["user_id"], datetime.now()))
+
+            # 更新内存中的会话状态
+            if chat_id in sessions:
+                sessions[chat_id]["publication_status"] = "pending"
+                sessions[chat_id]["rejection_reason"] = ""
+
+            print(f"[API] 提交对话公开申请成功: {chat_id}")
+
+            return {"message": "已提交公开申请", "status": "pending"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 提交公开申请失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="提交公开申请失败")
+
+
+@app.get("/api/admin/publication-requests")
+async def get_publication_requests(
+    status: str = "pending",
+    user_role: Optional[str] = None,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """获取公开对话请求列表"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 构建查询条件
+            where_conditions = []
+            params = []
+
+            # 状态筛选 - 只查询非draft状态的记录
+            if status == "all":
+                # 查询所有非draft状态的记录
+                where_conditions.append("(to.publication_status IN ('pending', 'published', 'rejected'))")
+            else:
+                # 查询特定状态的记录
+                where_conditions.append("to.publication_status = %s")
+                params.append(status)
+
+            # 角色筛选（仅超级管理员）
+            if current_user.get("role") == "super_admin" and user_role and user_role != "all":
+                where_conditions.append("u.role = %s")
+                params.append(user_role)
+            # 管理员只能看到普通用户的申请
+            elif current_user.get("role") == "admin":
+                where_conditions.append("u.role = 'user'")
+
+            # 执行查询
+            query = f"""
+                SELECT `to`.thread_id, t.topic, u.username, u.role, `to`.publication_status,
+                       `to`.submitted_for_review_at, `to`.reviewed_at, `to`.reviewed_by,
+                       `to`.rejection_reason
+                FROM thread_owners `to`
+                JOIN threads t ON `to`.thread_id = t.thread_id
+                JOIN users u ON `to`.user_id = u.user_id
+                WHERE {' AND '.join(where_conditions)}
+                ORDER BY `to`.submitted_for_review_at DESC
+            """
+            cursor.execute(query, tuple(params))
+            requests = cursor.fetchall()
+
+            # 为每个请求添加消息预览
+            result = []
+            for req in requests:
+                events = _db_manager.get_thread_events(req["thread_id"])
+                messages_preview = [
+                    {"author_name": e["speaker"], "content": e["content"]}
+                    for e in events
+                ]
+
+                result.append({
+                    "id": req["thread_id"],
+                    "chat_id": req["thread_id"],
+                    "chat_title": req["topic"],
+                    "username": req["username"],
+                    "user_role": req["role"],  # 添加用户角色
+                    "status": req["publication_status"],
+                    "created_at": req["submitted_for_review_at"],
+                    "messages_preview": messages_preview,
+                    "reject_reason": req["rejection_reason"]
+                })
+
+            return {"requests": result, "total": len(result)}
+    except Exception as e:
+        print(f"[API] 获取公开请求列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取公开请求列表失败")
+
+
+@app.post("/api/admin/publication-requests/{request_id}/review")
+async def review_publication_request(
+    request_id: str,
+    review_data: dict,
+    current_user: Dict[str, Any] = Depends(require_admin)
+):
+    """审核公开对话请求"""
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库服务不可用")
+
+    try:
+        approved = review_data.get("approved", False)
+        reason = review_data.get("reason", "")
+
+        with _db_manager.get_cursor() as cursor:
+            # 检查请求是否存在
+            cursor.execute("""
+                SELECT publication_status FROM thread_owners
+                WHERE thread_id = %s
+            """, (request_id,))
+            owner = cursor.fetchone()
+            if not owner:
+                raise HTTPException(status_code=404, detail="请求不存在")
+            if owner["publication_status"] != "pending":
+                raise HTTPException(status_code=400, detail="请求已处理")
+
+            if approved:
+                # 通过审核 - 保持锁定状态
+                cursor.execute("""
+                    UPDATE thread_owners
+                    SET publication_status = 'published',
+                        reviewed_at = %s,
+                        reviewed_by = %s,
+                        is_public = TRUE,
+                        is_locked = TRUE,
+                        rejection_reason = NULL
+                    WHERE thread_id = %s
+                """, (datetime.now(), current_user["user_id"], request_id))
+                print(f"[API] 公开请求审核通过: {request_id}")
+            else:
+                # 驳回 - 解除锁定
+                cursor.execute("""
+                    UPDATE thread_owners
+                    SET publication_status = 'rejected',
+                        reviewed_at = %s,
+                        reviewed_by = %s,
+                        rejection_reason = %s,
+                        is_locked = FALSE
+                    WHERE thread_id = %s
+                """, (datetime.now(), current_user["user_id"], reason, request_id))
+                print(f"[API] 公开请求审核驳回: {request_id}")
+
+            # 更新内存中的会话状态
+            if request_id in sessions:
+                sessions[request_id]["publication_status"] = "published" if approved else "rejected"
+                sessions[request_id]["rejection_reason"] = "" if approved else reason
+
+            return {"message": "审核完成"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 审核公开请求失败: {e}")
+        raise HTTPException(status_code=500, detail="审核公开请求失败")
 
 
 # ========== 异常处理 ==========
