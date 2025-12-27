@@ -246,6 +246,10 @@
                 <div class="stat-value deleted">{{ commentStats.deleted }}</div>
                 <div class="stat-label">已删除</div>
               </div>
+              <div class="stat-card-small">
+                <div class="stat-value today">{{ commentStats.today }}</div>
+                <div class="stat-label">今日评论数</div>
+              </div>
             </div>
 
             <!-- 筛选栏 -->
@@ -1023,10 +1027,16 @@ function getMockUsers() {
 
 // 过滤后的用户列表
 const filteredUsers = computed(() => {
-  // 先过滤掉当前超管用户（如果是超管的话）
+  // 先过滤掉所有超级管理员用户，以及当前登录用户
   let filtered = users.value;
   if (props.currentUser?.role === 'super_admin') {
-    filtered = filtered.filter(u => u.id !== props.currentUser.user_id && u.id !== props.currentUser.id);
+    filtered = filtered.filter(u => {
+      // 过滤掉所有超级管理员角色用户（不包括自己）
+      const isSuperAdmin = u.role === 'super_admin';
+      // 过滤掉当前登录用户
+      const isCurrentUser = u.id === props.currentUser.user_id || u.id === props.currentUser.id;
+      return !isSuperAdmin && !isCurrentUser;
+    });
   }
 
   // 再按搜索关键词过滤
@@ -2006,6 +2016,10 @@ onMounted(() => {
   color: #ffc757 !important;
 }
 
+.username-cell {
+  vertical-align: middle;
+}
+
 .username-cell.admin {
   color: #c77dff;
   font-weight: 700;
@@ -2287,6 +2301,7 @@ onMounted(() => {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s ease;
+  white-space: nowrap;
 }
 
 .action-btn.view {
@@ -3315,6 +3330,10 @@ onMounted(() => {
 
 .stat-value.violation {
   color: #fbbf24;
+}
+
+.stat-value.today {
+  color: #6aa7ff;
 }
 
 .stat-label {
