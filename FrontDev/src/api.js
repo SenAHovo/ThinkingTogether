@@ -399,6 +399,25 @@ class ApiClient {
   }
 
   /**
+   * 获取对话评论列表
+   * GET /api/public/chats/{threadId}/comments
+   */
+  async getThreadComments(threadId) {
+    return this.request(`/public/chats/${threadId}/comments`);
+  }
+
+  /**
+   * 添加评论
+   * POST /api/public/chats/{threadId}/comments
+   */
+  async addComment(threadId, content) {
+    return this.request(`/public/chats/${threadId}/comments`, {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+    });
+  }
+
+  /**
    * 点赞对话
    * POST /api/chats/{chatId}/like
    */

@@ -2204,6 +2204,310 @@ async def review_publication_request(
         raise HTTPException(status_code=500, detail="审核公开请求失败")
 
 
+# ========== 点赞相关 API ==========
+
+# Pydantic模型
+class CommentRequest(BaseModel):
+    content: str
+
+@app.post("/api/chats/{chat_id}/like")
+async def like_chat(
+    chat_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    点赞对话
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查对话是否存在
+            cursor.execute("SELECT thread_id FROM threads WHERE thread_id = %s", (chat_id,))
+            if not cursor.fetchone():
+                raise HTTPException(status_code=404, detail="对话不存在")
+
+            # 检查是否已点赞
+            cursor.execute(
+                "SELECT id FROM thread_likes WHERE thread_id = %s AND user_id = %s",
+                (chat_id, current_user['user_id'])
+            )
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="已经点赞过了")
+
+            # 添加点赞记录
+            cursor.execute(
+                "INSERT INTO thread_likes (thread_id, user_id) VALUES (%s, %s)",
+                (chat_id, current_user['user_id'])
+            )
+
+            return {"message": "点赞成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 点赞失败: {e}")
+        raise HTTPException(status_code=500, detail="点赞失败")
+
+
+@app.delete("/api/chats/{chat_id}/like")
+async def unlike_chat(
+    chat_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    取消点赞对话
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查是否已点赞
+            cursor.execute(
+                "SELECT id FROM thread_likes WHERE thread_id = %s AND user_id = %s",
+                (chat_id, current_user['user_id'])
+            )
+            if not cursor.fetchone():
+                raise HTTPException(status_code=400, detail="还未点赞")
+
+            # 删除点赞记录
+            cursor.execute(
+                "DELETE FROM thread_likes WHERE thread_id = %s AND user_id = %s",
+                (chat_id, current_user['user_id'])
+            )
+
+            return {"message": "取消点赞成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 取消点赞失败: {e}")
+        raise HTTPException(status_code=500, detail="取消点赞失败")
+
+
+@app.get("/api/chats/{chat_id}/like-status")
+async def get_like_status(
+    chat_id: str,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    获取对话点赞状态和点赞数
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 获取点赞总数
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM thread_likes WHERE thread_id = %s",
+                (chat_id,)
+            )
+            result = cursor.fetchone()
+            like_count = result['count'] if result else 0
+
+            # 检查当前用户是否已点赞
+            is_liked = False
+            if current_user:
+                cursor.execute(
+                    "SELECT id FROM thread_likes WHERE thread_id = %s AND user_id = %s",
+                    (chat_id, current_user['user_id'])
+                )
+                is_liked = cursor.fetchone() is not None
+
+            return {
+                "like_count": like_count,
+                "is_liked": is_liked
+            }
+
+    except Exception as e:
+        print(f"[API] 获取点赞状态失败: {e}")
+        raise HTTPException(status_code=500, detail="获取点赞状态失败")
+
+
+# ========== 公开对话大厅 API ==========
+
+@app.get("/api/public/chats")
+async def get_public_chat_hall(
+    limit: int = 20,
+    offset: int = 0,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    获取公开对话大厅列表（按点赞数和创建时间排序）
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 查询已公开的对话
+            query = """
+                SELECT
+                    t.thread_id as id,
+                    t.topic as title,
+                    t.created_at,
+                    u.username,
+                    COUNT(DISTINCT tl.user_id) as like_count,
+                    COUNT(DISTINCT c.comment_id) as comment_count
+                FROM threads t
+                LEFT JOIN thread_owners to_owners ON t.thread_id = to_owners.thread_id
+                LEFT JOIN users u ON to_owners.user_id = u.user_id
+                LEFT JOIN thread_likes tl ON t.thread_id = tl.thread_id
+                LEFT JOIN comments c ON t.thread_id = c.thread_id AND c.is_deleted = 0
+                WHERE to_owners.publication_status = 'published'
+                GROUP BY t.thread_id, t.topic, t.created_at, u.username
+                ORDER BY like_count DESC, t.created_at DESC
+                LIMIT %s OFFSET %s
+            """
+
+            cursor.execute(query, (limit, offset))
+            chats = cursor.fetchall()
+
+            # 获取当前用户点赞的所有对话ID
+            liked_thread_ids = set()
+            if current_user:
+                cursor.execute(
+                    "SELECT DISTINCT thread_id FROM thread_likes WHERE user_id = %s",
+                    (current_user['user_id'],)
+                )
+                liked_thread_ids = {row['thread_id'] for row in cursor.fetchall()}
+
+            # 为每个对话添加消息预览和点赞状态
+            result = []
+            for chat in chats:
+                events = _db_manager.get_thread_events(chat['id'])
+                messages_preview = [
+                    {"author_id": e.get("agent_id", "user"),
+                     "author_name": e["speaker"],
+                     "content": e["content"]}
+                    for e in events[:3]
+                ]
+
+                result.append({
+                    "id": chat['id'],
+                    "title": chat['title'],
+                    "username": chat['username'],
+                    "created_at": chat['created_at'].isoformat() if chat['created_at'] else None,
+                    "like_count": chat['like_count'],
+                    "comment_count": chat['comment_count'],
+                    "is_liked": chat['id'] in liked_thread_ids,
+                    "messages_preview": messages_preview
+                })
+
+            return {"chats": result, "total": len(result)}
+
+    except Exception as e:
+        print(f"[API] 获取公开对话大厅失败: {e}")
+        raise HTTPException(status_code=500, detail="获取公开对话大厅失败")
+
+
+@app.get("/api/public/chats/{thread_id}/comments")
+async def get_thread_comments_api(thread_id: str):
+    """
+    获取对话的评论列表
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            query = """
+                SELECT
+                    c.comment_id,
+                    c.content,
+                    c.created_at,
+                    u.username
+                FROM comments c
+                LEFT JOIN users u ON c.user_id = u.user_id
+                WHERE c.thread_id = %s AND c.is_deleted = 0
+                ORDER BY c.created_at DESC
+            """
+
+            cursor.execute(query, (thread_id,))
+            comments = cursor.fetchall()
+
+            # 格式化评论数据
+            result = []
+            for comment in comments:
+                result.append({
+                    "comment_id": comment['comment_id'],
+                    "content": comment['content'],
+                    "created_at": comment['created_at'].isoformat() if comment['created_at'] else None,
+                    "username": comment['username'] or '匿名'
+                })
+
+            return {"comments": result}
+
+    except Exception as e:
+        print(f"[API] 获取评论列表失败: {e}")
+        raise HTTPException(status_code=500, detail="获取评论列表失败")
+
+
+@app.post("/api/public/chats/{thread_id}/comments")
+async def add_comment_api(
+    thread_id: str,
+    request_data: CommentRequest,
+    current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
+):
+    """
+    添加评论
+    """
+    if not _db_manager:
+        raise HTTPException(status_code=503, detail="数据库未连接")
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    content = request_data.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="评论内容不能为空")
+
+    try:
+        with _db_manager.get_cursor() as cursor:
+            # 检查对话是否存在且已公开
+            cursor.execute("""
+                SELECT publication_status FROM thread_owners
+                WHERE thread_id = %s
+            """, (thread_id,))
+
+            thread_owner = cursor.fetchone()
+            if not thread_owner:
+                raise HTTPException(status_code=404, detail="对话不存在")
+
+            if thread_owner['publication_status'] != 'published':
+                raise HTTPException(status_code=400, detail="只能评论已公开的对话")
+
+            # 创建评论
+            comment_id = uuid.uuid4().hex[:32]
+            created_at = datetime.now()
+
+            cursor.execute("""
+                INSERT INTO comments (comment_id, thread_id, user_id, content, is_deleted, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (comment_id, thread_id, current_user['user_id'], content, 0, created_at))
+
+            return {
+                "message": "评论成功",
+                "comment_id": comment_id,
+                "created_at": created_at.isoformat()
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 添加评论失败: {e}")
+        raise HTTPException(status_code=500, detail="添加评论失败")
+
+
 # ========== 异常处理 ==========
 
 @app.exception_handler(Exception)

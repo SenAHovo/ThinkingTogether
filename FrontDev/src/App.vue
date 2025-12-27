@@ -14,7 +14,7 @@
       <!-- 已公开历史对话轮播图 -->
       <div class="section carouselSection">
         <div class="sectionTitle rowBetween">
-          <span>已公开对话</span>
+          <span style="cursor: pointer;" @click="showPublicChatsModule">已公开对话</span>
           <button class="ghost" @click="refreshPublicChats">刷新</button>
         </div>
 
@@ -22,7 +22,7 @@
           <div
             v-if="publicChats.length > 0"
             class="publicChatItem"
-            @click="viewPublicChat(publicChats[currentPublicChatIndex].id)"
+            @click="showPublicChatsModule"
           >
             <div class="publicChatTitle">{{ publicChats[currentPublicChatIndex].title }}</div>
             <div class="publicChatMeta">
@@ -156,9 +156,18 @@
     </aside>
 
     <!-- 右侧：聊天区 -->
-    <main class="main" :class="{ 'home-mode': isHomePage }">
+    <main class="main" :class="{ 'home-mode': (isHomePage && !showPublicChats) || showPublicChats }">
+      <!-- 已公开对话模块 -->
+      <div v-if="showPublicChats" class="publicChatsWrapper">
+        <PublicChats
+          :current-user="currentUser"
+          @close="hidePublicChatsModule"
+          @show-login="showLoginModal = true"
+        />
+      </div>
+
       <!-- 主页介绍界面 -->
-      <div v-if="isHomePage" class="homePage">
+      <div v-if="!showPublicChats && isHomePage" class="homePage">
         <div class="homeContent">
           <div class="homeLogo">
             <div class="logoLarge">智炬</div>
@@ -208,7 +217,7 @@
       </div>
 
       <!-- 对话界面 -->
-      <div v-else class="chatContainer">
+      <div v-if="!showPublicChats && !isHomePage" class="chatContainer">
         <header class="topbar">
           <div class="topicTitle">
             <div class="big">{{ activeChat.title }}</div>
@@ -602,6 +611,7 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { apiClient, now, stamp, uid, mapSpeakerToMemberId, mapMemberIdToName, getUser } from "./api.js";
+import PublicChats from "./PublicChats.vue";
 
 // 定义 emits
 const emit = defineEmits(['switch-to-admin']);
@@ -609,6 +619,9 @@ const emit = defineEmits(['switch-to-admin']);
 // ========== 用户认证状态 ==========
 const currentUser = ref(null);
 const showLoginModal = ref(false);
+
+// ========== 已公开对话模块状态 ==========
+const showPublicChats = ref(false);
 const showRegisterModal = ref(false);
 
 // ========== 设置相关状态 ==========
@@ -1210,6 +1223,7 @@ async function switchChat(id) {
   activeChatId.value = id;
   quoted.value = null;
   draft.value = "";
+  showPublicChats.value = false; // 重置已公开对话状态
 
   // 加载该对话的完整消息历史
   if (id && id !== 'empty') {
@@ -1235,6 +1249,7 @@ function goToHomePage() {
   activeChatId.value = null;
   homeDraft.value = '';
   draft.value = '';
+  showPublicChats.value = false; // 重置已公开对话状态
   nextTick(() => {
     if (homeInputRef.value) {
       autoResizeTextarea(homeInputRef.value, 3, 100);
@@ -1906,6 +1921,22 @@ async function viewPublicChat(chatId) {
   activeChatId.value = chatId;
   await loadChatMessages(chatId);
   scrollToBottom(false);
+}
+
+/**
+ * 显示已公开对话模块
+ */
+function showPublicChatsModule() {
+  console.log('[App] showPublicChatsModule called, showPublicChats =', showPublicChats.value, '-> true');
+  showPublicChats.value = true;
+}
+
+/**
+ * 隐藏已公开对话模块
+ */
+function hidePublicChatsModule() {
+  console.log('[App] hidePublicChatsModule called, showPublicChats =', showPublicChats.value, '-> false');
+  showPublicChats.value = false;
 }
 
 // ========== 账号管理相关 ==========
@@ -2727,6 +2758,13 @@ html, body {
   align-items: center;
   justify-content: center;
   background: var(--home-bg);
+}
+
+.publicChatsWrapper {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .homeContent {
