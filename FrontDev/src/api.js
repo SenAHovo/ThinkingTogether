@@ -230,18 +230,26 @@ class ApiClient {
     const token = getToken();
     const url = `${this.baseUrl}/chats/${chatId}/export`;
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-      },
-    });
+    // 添加超时控制（60秒超时）
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        signal: controller.signal,
+      });
 
-    // 获取文件名 - 支持RFC 5987编码格式
+      clearTimeout(timeoutId);
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      // 获取文件名 - 支持RFC 5987编码格式
     const contentDisposition = response.headers.get('Content-Disposition');
     let filename = '对话.txt';
     if (contentDisposition) {
@@ -273,6 +281,12 @@ class ApiClient {
     link.click();
     document.body.removeChild(link);
     window.URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      if (error.name === 'AbortError') {
+        throw new Error('导出超时，对话内容可能过长，请稍后重试');
+      }
+      throw error;
+    }
   }
 
   /**

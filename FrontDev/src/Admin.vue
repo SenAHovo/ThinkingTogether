@@ -183,8 +183,8 @@
 
               <div v-if="request.status !== 'pending'" class="request-section review-result">
                 <div class="section-label">审核结果：</div>
-                <div class="section-content" :class="{ approved: request.status === 'approved', rejected: request.status === 'rejected' }">
-                  {{ request.status === 'approved' ? '✓ 已通过' : '✗ 已驳回' }}
+                <div class="section-content" :class="{ approved: request.status === 'published', rejected: request.status === 'rejected' }">
+                  {{ request.status === 'published' ? '✓ 已通过' : '✗ 已驳回' }}
                   <span v-if="request.reject_reason"> - {{ request.reject_reason }}</span>
                 </div>
               </div>

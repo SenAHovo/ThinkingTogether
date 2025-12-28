@@ -23,7 +23,8 @@
       "Bash(npm run build:*)",
       "Bash(cat:*)",
       "Bash(ls:*)",
-      "Bash(copy:*)"
+      "Bash(copy:*)",
+      "Bash(if exist:*)"
     ],
     "deny": [],
     "ask": []

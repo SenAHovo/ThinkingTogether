@@ -97,13 +97,26 @@
       <div v-if="showMenuFor === c.id" class="menuDropdown" @click.stop>
         <template v-if="!c.publicationStatus || c.publicationStatus === 'draft'">
           <button
-            v-if="currentUser?.role !== 'super_admin'"
+            v-if="currentUser && currentUser?.role !== 'super_admin'"
             class="menuItem"
             @click="submitForPublication(c)"
           >
             <span class="menuIcon">📤</span> 申请公开
           </button>
-          <button v-else class="menuItem disabled" disabled title="超级管理员不可申请公开">
+          <button
+            v-else-if="currentUser && currentUser?.role === 'super_admin'"
+            class="menuItem disabled"
+            disabled
+            title="超级管理员不可申请公开"
+          >
+            <span class="menuIcon">📤</span> 申请公开
+          </button>
+          <button
+            v-else
+            class="menuItem disabled"
+            disabled
+            title="请先登录后申请公开"
+          >
             <span class="menuIcon">📤</span> 申请公开
           </button>
         </template>
@@ -125,7 +138,19 @@
         <button class="menuItem" @click="startRename(c)">
           <span class="menuIcon">✏️</span> 重命名
         </button>
-        <button class="menuItem" @click="exportSingleChat(c)">
+        <button
+          v-if="currentUser"
+          class="menuItem"
+          @click="exportSingleChat(c)"
+        >
+          <span class="menuIcon">📥</span> 导出 TXT
+        </button>
+        <button
+          v-else
+          class="menuItem disabled"
+          disabled
+          title="请先登录后导出"
+        >
           <span class="menuIcon">📥</span> 导出 TXT
         </button>
         <button class="menuItem delete" @click="confirmDeleteSingle(c)">
@@ -1033,6 +1058,9 @@ async function loadChatMessages(chatId) {
     const result = await apiClient.getMessages(chatId, 100);
     const chat = chats.value.find(c => c.id === chatId);
     if (chat) {
+      // 保存现有的loading消息
+      const loadingMessages = chat.messages.filter(m => m.isLoading);
+
       // 转换后端消息格式为前端格式
       chat.messages = result.messages.map(msg => ({
         id: msg.message_id || msg.id,
@@ -1043,6 +1071,12 @@ async function loadChatMessages(chatId) {
         time: msg.timestamp,
         role: msg.role
       }));
+
+      // 恢复loading消息（如果有）
+      if (loadingMessages.length > 0) {
+        chat.messages = [...chat.messages, ...loadingMessages];
+      }
+
       chat.updatedAt = result.updated_at || stamp();
       // 更新发布状态和驳回原因
       chat.publicationStatus = result.publication_status || 'draft';
@@ -1430,35 +1464,41 @@ async function send() {
     // 3. 异步调用后端获取AI响应
     const result = await apiClient.sendMessage(chat.id, text, 'send');
 
-    // 4. 移除loading消息，替换为真实AI响应
-    chat.messages = chat.messages.filter(m => !m.isLoading);
+    // 4. 检查响应状态
+    if (result.status === 'processing') {
+      // 后端正在处理，保留loading消息，等待WebSocket推送
+      console.log('[App] AI正在后台处理，等待WebSocket推送...');
+    } else {
+      // 旧版本后端：立即返回了AI响应，移除loading消息
+      chat.messages = chat.messages.filter(m => !m.isLoading);
 
-    // 5. 添加AI响应（只添加新消息）
-    // 获取当前聊天中已存在的消息ID集合
-    const existingIds = new Set(chat.messages.map(m => m.id));
+      // 5. 添加AI响应（只添加新消息）
+      // 获取当前聊天中已存在的消息ID集合
+      const existingIds = new Set(chat.messages.map(m => m.id));
 
-    if (result.messages && result.messages.length > 0) {
-      for (const msg of result.messages) {
-        const msgId = msg.message_id || msg.id;
-        // 只添加不存在的消息，跳过用户消息和loading消息
-        if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
-          continue;
+      if (result.messages && result.messages.length > 0) {
+        for (const msg of result.messages) {
+          const msgId = msg.message_id || msg.id;
+          // 只添加不存在的消息，跳过用户消息和loading消息
+          if (msg.author_id === 'user' || msg.isLoading || existingIds.has(msgId)) {
+            continue;
+          }
+          chat.messages.push({
+            id: msgId,
+            authorId: msg.author_id,
+            author_name: msg.author_name,
+            text: msg.content,
+            content: msg.content,
+            time: msg.timestamp,
+            role: msg.role
+          });
+          existingIds.add(msgId);
         }
-        chat.messages.push({
-          id: msgId,
-          authorId: msg.author_id,
-          author_name: msg.author_name,
-          text: msg.content,
-          content: msg.content,
-          time: msg.timestamp,
-          role: msg.role
-        });
-        existingIds.add(msgId);
       }
-    }
 
-    chat.updatedAt = result.updated_at || stamp();
-    scrollToBottom();
+      chat.updatedAt = result.updated_at || stamp();
+      scrollToBottom();
+    }
 
     // 用户发送消息后，直接等待用户操作，不再自动触发
     waitingForUser.value = true;
