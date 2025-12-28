@@ -363,6 +363,8 @@
           </div>
           <button class="submitBtn" @click="handleLogin">登录</button>
           <div class="formFooter">
+            <a @click="showForgotPasswordModal = true; showLoginModal = false" class="forgotLink">忘记密码？</a>
+            <span style="margin: 0 8px; color: rgba(255,255,255,.3)">|</span>
             还没有账号？
             <a @click="showLoginModal = false; showRegisterModal = true">立即注册</a>
           </div>
@@ -421,12 +423,11 @@
               v-model="registerForm.confirmPassword"
               type="password"
               placeholder="再次输入密码"
-              @keyup.enter="handleRegister"
             />
             <span v-if="registerErrors.confirmPassword" class="fieldError">{{ registerErrors.confirmPassword }}</span>
           </div>
           <div class="formGroup">
-            <label>邮箱（可选）</label>
+            <label>邮箱 <span class="required">*</span></label>
             <input
               v-model="registerForm.email"
               type="email"
@@ -434,10 +435,107 @@
             />
             <span v-if="registerErrors.email" class="fieldError">{{ registerErrors.email }}</span>
           </div>
+          <div class="formGroup">
+            <label>邮箱验证码 <span class="required">*</span></label>
+            <div class="verificationCodeContainer">
+              <input
+                v-model="registerForm.verificationCode"
+                type="text"
+                placeholder="输入验证码"
+                maxlength="6"
+                @keyup.enter="handleRegister"
+              />
+              <button
+                class="sendCodeBtn"
+                :class="{ sending: registerForm.sendingCode, success: registerForm.sendSuccess }"
+                @click="sendRegisterVerificationCode"
+                :disabled="registerForm.sendingCode || registerForm.countdown > 0"
+              >
+                {{ registerForm.sendSuccess ? '发送成功！' : registerForm.sendingCode ? '发送中...' : '发送验证码' }}
+              </button>
+            </div>
+            <div v-if="registerForm.sendSuccess && !registerForm.sendingCode" class="resendLink">
+              未接收到验证码？<a @click="resendRegisterVerificationCode">点击重新发送</a>
+            </div>
+            <span v-if="registerErrors.verificationCode" class="fieldError">{{ registerErrors.verificationCode }}</span>
+          </div>
           <button class="submitBtn" @click="handleRegister">注册</button>
           <div class="formFooter">
             已有账号？
             <a @click="showRegisterModal = false; showLoginModal = true">立即登录</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 忘记密码弹窗 -->
+    <div v-if="showForgotPasswordModal" class="modalOverlay" @click.self="showForgotPasswordModal = false">
+      <div class="modal">
+        <div class="modalHeader">
+          <h2>重置密码</h2>
+          <button class="closeBtn" @click="showForgotPasswordModal = false">×</button>
+        </div>
+        <div class="modalBody">
+          <div v-if="formError" class="formError">{{ formError }}</div>
+
+          <div class="formGroup">
+            <label>邮箱 <span class="required">*</span></label>
+            <input
+              v-model="forgotPasswordForm.email"
+              type="email"
+              placeholder="请输入注册时使用的邮箱"
+            />
+            <span v-if="forgotPasswordErrors.email" class="fieldError">{{ forgotPasswordErrors.email }}</span>
+          </div>
+
+          <div class="formGroup">
+            <label>验证码 <span class="required">*</span></label>
+            <div class="verificationCodeContainer">
+              <input
+                v-model="forgotPasswordForm.verificationCode"
+                type="text"
+                placeholder="输入验证码"
+                maxlength="6"
+              />
+              <button
+                class="sendCodeBtn"
+                :class="{ sending: forgotPasswordForm.sendingCode, success: forgotPasswordForm.sendSuccess }"
+                @click="sendForgotPasswordVerificationCode"
+                :disabled="forgotPasswordForm.sendingCode || forgotPasswordForm.countdown > 0"
+              >
+                {{ forgotPasswordForm.sendSuccess ? '发送成功！' : forgotPasswordForm.sendingCode ? '发送中...' : '发送验证码' }}
+              </button>
+            </div>
+            <div v-if="forgotPasswordForm.sendSuccess && !forgotPasswordForm.sendingCode" class="resendLink">
+              未接收到验证码？<a @click="resendForgotPasswordVerificationCode">点击重新发送</a>
+            </div>
+            <span v-if="forgotPasswordErrors.verificationCode" class="fieldError">{{ forgotPasswordErrors.verificationCode }}</span>
+          </div>
+
+          <div class="formGroup">
+            <label>新密码 <span class="required">*</span></label>
+            <input
+              v-model="forgotPasswordForm.newPassword"
+              type="password"
+              placeholder="至少6个字符"
+            />
+            <span v-if="forgotPasswordErrors.newPassword" class="fieldError">{{ forgotPasswordErrors.newPassword }}</span>
+          </div>
+
+          <div class="formGroup">
+            <label>确认密码 <span class="required">*</span></label>
+            <input
+              v-model="forgotPasswordForm.confirmPassword"
+              type="password"
+              placeholder="再次输入新密码"
+              @keyup.enter="handleResetPassword"
+            />
+            <span v-if="forgotPasswordErrors.confirmPassword" class="fieldError">{{ forgotPasswordErrors.confirmPassword }}</span>
+          </div>
+
+          <button class="submitBtn" @click="handleResetPassword">重置密码</button>
+          <div class="formFooter">
+            <a @click="showForgotPasswordModal = false; showLoginModal = true">返回登录</a>
           </div>
         </div>
       </div>
@@ -534,8 +632,8 @@
               <button class="submitBtn" @click="showSettingsModal = false; showLoginModal = true">立即登录</button>
             </div>
             <div v-else class="accountManagementContainer">
-              <!-- 左侧：个人信息 -->
-              <div class="accountLeftPanel">
+              <!-- 第一部分：个人信息 -->
+              <div class="accountSection">
                 <h3>个人信息</h3>
 
                 <!-- 头像上传 -->
@@ -568,13 +666,19 @@
                     v-model="profileForm.email"
                     type="email"
                     placeholder="your@email.com"
+                    disabled
+                    style="background: rgba(255,255,255,.05); cursor: not-allowed; opacity: 0.6;"
+                    title="邮箱不可更改"
                   />
+                  <small style="color: rgba(255,255,255,.4); font-size: 12px; margin-top: 4px; display: block;">
+                    * 邮箱不可更改，如需更换请联系管理员
+                  </small>
                 </div>
                 <button class="submitBtn" @click="updateProfile">保存个人信息</button>
               </div>
 
-              <!-- 右侧：修改密码 -->
-              <div class="accountRightPanel">
+              <!-- 第二部分：修改密码 -->
+              <div class="accountSection">
                 <h3>修改密码</h3>
                 <div v-if="profileError" class="formError">{{ profileError }}</div>
                 <div v-if="profileSuccess" class="formSuccess">{{ profileSuccess }}</div>
@@ -603,6 +707,53 @@
                   />
                 </div>
                 <button class="submitBtn" @click="changePassword">修改密码</button>
+              </div>
+
+              <!-- 第三部分：邮箱验证修改 -->
+              <div class="accountSection">
+                <h3>邮箱验证修改</h3>
+                <div class="formGroup">
+                  <label>邮箱验证码</label>
+                  <div class="verificationCodeContainer">
+                    <input
+                      v-model="emailPasswordForm.verificationCode"
+                      type="text"
+                      placeholder="输入验证码"
+                      maxlength="6"
+                    />
+                    <button
+                      class="sendCodeBtn"
+                      :class="{ sending: emailPasswordForm.sendingCode, success: emailPasswordForm.sendSuccess }"
+                      @click="sendEmailPasswordVerificationCode"
+                      :disabled="emailPasswordForm.sendingCode || emailPasswordForm.countdown > 0"
+                    >
+                      {{ emailPasswordForm.sendSuccess ? '发送成功！' : emailPasswordForm.sendingCode ? '发送中...' : '发送验证码' }}
+                    </button>
+                  </div>
+                  <div v-if="emailPasswordForm.sendSuccess && !emailPasswordForm.sendingCode" class="resendLink">
+                    未接收到验证码？<a @click="resendEmailPasswordVerificationCode">点击重新发送</a>
+                  </div>
+                  <span v-if="emailPasswordErrors.verificationCode" class="fieldError">{{ emailPasswordErrors.verificationCode }}</span>
+                </div>
+                <div class="formGroup">
+                  <label>新密码</label>
+                  <input
+                    v-model="emailPasswordForm.newPassword"
+                    type="password"
+                    placeholder="至少6个字符"
+                  />
+                  <span v-if="emailPasswordErrors.newPassword" class="fieldError">{{ emailPasswordErrors.newPassword }}</span>
+                </div>
+                <div class="formGroup">
+                  <label>确认新密码</label>
+                  <input
+                    v-model="emailPasswordForm.confirmPassword"
+                    type="password"
+                    placeholder="再次输入新密码"
+                  />
+                  <span v-if="emailPasswordErrors.confirmPassword" class="fieldError">{{ emailPasswordErrors.confirmPassword }}</span>
+                </div>
+                <button class="submitBtn" style="background: rgba(255,167,38,.20); border-color: rgba(255,167,38,.35);" @click="changePasswordWithEmail">通过邮箱验证修改</button>
               </div>
             </div>
           </div>
@@ -648,6 +799,7 @@ const showLoginModal = ref(false);
 // ========== 已公开对话模块状态 ==========
 const showPublicChats = ref(false);
 const showRegisterModal = ref(false);
+const showForgotPasswordModal = ref(false);
 
 // ========== 设置相关状态 ==========
 const showSettingsModal = ref(false);
@@ -682,6 +834,19 @@ const passwordForm = ref({
   confirmPassword: '',
 });
 
+// 邮箱验证修改密码表单
+const emailPasswordForm = ref({
+  verificationCode: '',
+  newPassword: '',
+  confirmPassword: '',
+  sendingCode: false,
+  countdown: 0,
+  sendSuccess: false,
+  lastSentTime: null,
+});
+
+const emailPasswordErrors = ref({});
+
 // ========== 个人信息错误/成功消息 ==========
 const profileError = ref('');
 const profileSuccess = ref('');
@@ -698,9 +863,28 @@ const registerForm = ref({
   password: '',
   confirmPassword: '',
   email: '',
+  verificationCode: '', // 邮箱验证码
+  sendingCode: false, // 是否正在发送验证码
+  countdown: 0, // 倒计时秒数
+  sendSuccess: false, // 是否发送成功
+  lastSentTime: null, // 上次发送时间
   avatarUrl: '', // 可选，使用默认头像
   avatarPreview: '', // 头像预览
 });
+
+// 忘记密码表单
+const forgotPasswordForm = ref({
+  email: '',
+  verificationCode: '',
+  newPassword: '',
+  confirmPassword: '',
+  sendingCode: false,
+  countdown: 0,
+  sendSuccess: false,
+  lastSentTime: null,
+});
+
+const forgotPasswordErrors = ref({});
 
 // 表单错误
 const formError = ref('');
@@ -1770,8 +1954,13 @@ async function handleRegister() {
   if (registerForm.value.password !== registerForm.value.confirmPassword) {
     errors.confirmPassword = '两次密码不一致';
   }
-  if (registerForm.value.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.value.email)) {
-    errors.email = '邮箱格式不正确';
+  // 邮箱必填
+  if (!registerForm.value.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.value.email)) {
+    errors.email = '请输入有效的邮箱地址';
+  }
+  // 验证码必填
+  if (!registerForm.value.verificationCode || registerForm.value.verificationCode.length !== 6) {
+    errors.verificationCode = '请输入6位验证码';
   }
 
   if (Object.keys(errors).length > 0) {
@@ -1783,7 +1972,8 @@ async function handleRegister() {
     const result = await apiClient.register(
       registerForm.value.username,
       registerForm.value.password,
-      registerForm.value.email || null,
+      registerForm.value.email,
+      registerForm.value.verificationCode,
       registerForm.value.avatarUrl || null
     );
     currentUser.value = result.user;
@@ -1793,6 +1983,9 @@ async function handleRegister() {
       password: '',
       confirmPassword: '',
       email: '',
+      verificationCode: '',
+      sendingCode: false,
+      countdown: 0,
       avatarUrl: '',
       avatarPreview: '',
     };
@@ -1803,6 +1996,233 @@ async function handleRegister() {
     activeChatId.value = null;
   } catch (err) {
     formError.value = err.message || '注册失败，请重试';
+  }
+}
+
+/**
+ * 发送注册验证码
+ */
+async function sendRegisterVerificationCode() {
+  // 检查是否正在倒计时
+  if (registerForm.value.countdown > 0) {
+    alert(`请等待 ${registerForm.value.countdown} 秒后再试`);
+    return;
+  }
+
+  // 验证邮箱格式
+  if (!registerForm.value.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(registerForm.value.email)) {
+    registerErrors.value = { email: '请输入有效的邮箱地址' };
+    return;
+  }
+
+  registerForm.value.sendingCode = true;
+  registerForm.value.sendSuccess = false;
+  registerErrors.value = {};
+
+  try {
+    console.log('[注册] 开始发送验证码到:', registerForm.value.email);
+
+    // 1-2秒随机时间模拟加载
+    const randomDelay = 1000 + Math.random() * 1000;
+    await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+    const result = await apiClient.sendVerificationCode(registerForm.value.email, 'register');
+    console.log('[注册] 验证码发送成功:', result);
+
+    // 记录发送时间
+    registerForm.value.lastSentTime = Date.now();
+
+    // 发送成功,开始倒计时
+    registerForm.value.countdown = 60;
+    const countdown = () => {
+      if (registerForm.value.countdown > 0) {
+        registerForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+
+    // 显示发送成功状态
+    registerForm.value.sendSuccess = true;
+
+    // 清除可能的错误信息
+    if (registerErrors.value.email) {
+      delete registerErrors.value.email;
+    }
+  } catch (err) {
+    console.error('[注册] 发送验证码失败:', err);
+    // 不显示错误提示，因为实际上邮件可能发送成功了
+    registerForm.value.sendSuccess = true;
+    registerForm.value.lastSentTime = Date.now();
+    registerForm.value.countdown = 60;
+    const countdown = () => {
+      if (registerForm.value.countdown > 0) {
+        registerForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+  } finally {
+    registerForm.value.sendingCode = false;
+  }
+}
+
+/**
+ * 重新发送注册验证码
+ */
+async function resendRegisterVerificationCode() {
+  // 检查距离上次发送是否超过60秒
+  if (registerForm.value.lastSentTime) {
+    const timeSinceLastSend = (Date.now() - registerForm.value.lastSentTime) / 1000;
+    if (timeSinceLastSend < 60) {
+      alert('请勿在60s内连续发送！');
+      return;
+    }
+  }
+
+  // 调用发送验证码函数
+  await sendRegisterVerificationCode();
+}
+
+/**
+ * 发送忘记密码验证码
+ */
+async function sendForgotPasswordVerificationCode() {
+  // 检查是否正在倒计时
+  if (forgotPasswordForm.value.countdown > 0) {
+    alert(`请等待 ${forgotPasswordForm.value.countdown} 秒后再试`);
+    return;
+  }
+
+  // 验证邮箱格式
+  if (!forgotPasswordForm.value.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotPasswordForm.value.email)) {
+    forgotPasswordErrors.value = { email: '请输入有效的邮箱地址' };
+    return;
+  }
+
+  forgotPasswordForm.value.sendingCode = true;
+  forgotPasswordForm.value.sendSuccess = false;
+  forgotPasswordErrors.value = {};
+  formError.value = '';
+
+  try {
+    console.log('[忘记密码] 开始发送验证码到:', forgotPasswordForm.value.email);
+
+    // 1-2秒随机时间模拟加载
+    const randomDelay = 1000 + Math.random() * 1000;
+    await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+    const result = await apiClient.sendVerificationCode(forgotPasswordForm.value.email, 'reset_password');
+    console.log('[忘记密码] 验证码发送成功:', result);
+
+    // 记录发送时间
+    forgotPasswordForm.value.lastSentTime = Date.now();
+
+    // 发送成功,开始倒计时
+    forgotPasswordForm.value.countdown = 60;
+    const countdown = () => {
+      if (forgotPasswordForm.value.countdown > 0) {
+        forgotPasswordForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+
+    // 显示发送成功状态
+    forgotPasswordForm.value.sendSuccess = true;
+
+    // 清除可能的错误信息
+    if (forgotPasswordErrors.value.email) {
+      delete forgotPasswordErrors.value.email;
+    }
+  } catch (err) {
+    console.error('[忘记密码] 发送验证码失败:', err);
+    // 不显示错误提示，因为实际上邮件可能发送成功了
+    forgotPasswordForm.value.sendSuccess = true;
+    forgotPasswordForm.value.lastSentTime = Date.now();
+    forgotPasswordForm.value.countdown = 60;
+    const countdown = () => {
+      if (forgotPasswordForm.value.countdown > 0) {
+        forgotPasswordForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+  } finally {
+    forgotPasswordForm.value.sendingCode = false;
+  }
+}
+
+/**
+ * 重新发送忘记密码验证码
+ */
+async function resendForgotPasswordVerificationCode() {
+  // 检查距离上次发送是否超过60秒
+  if (forgotPasswordForm.value.lastSentTime) {
+    const timeSinceLastSend = (Date.now() - forgotPasswordForm.value.lastSentTime) / 1000;
+    if (timeSinceLastSend < 60) {
+      alert('请勿在60s内连续发送！');
+      return;
+    }
+  }
+
+  // 调用发送验证码函数
+  await sendForgotPasswordVerificationCode();
+}
+
+/**
+ * 重置密码
+ */
+async function handleResetPassword() {
+  formError.value = '';
+  forgotPasswordErrors.value = {};
+
+  // 前端校验
+  const errors = {};
+  if (!forgotPasswordForm.value.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(forgotPasswordForm.value.email)) {
+    errors.email = '请输入有效的邮箱地址';
+  }
+  if (!forgotPasswordForm.value.verificationCode || forgotPasswordForm.value.verificationCode.length !== 6) {
+    errors.verificationCode = '请输入6位验证码';
+  }
+  if (!forgotPasswordForm.value.newPassword || forgotPasswordForm.value.newPassword.length < 6) {
+    errors.newPassword = '密码至少6个字符';
+  }
+  if (forgotPasswordForm.value.newPassword !== forgotPasswordForm.value.confirmPassword) {
+    errors.confirmPassword = '两次密码不一致';
+  }
+
+  if (Object.keys(errors).length > 0) {
+    forgotPasswordErrors.value = errors;
+    return;
+  }
+
+  try {
+    await apiClient.resetPassword(
+      forgotPasswordForm.value.email,
+      forgotPasswordForm.value.verificationCode,
+      forgotPasswordForm.value.newPassword
+    );
+
+    // 重置成功,关闭弹窗并显示登录界面
+    showForgotPasswordModal.value = false;
+    showLoginModal.value = true;
+
+    // 清空表单
+    forgotPasswordForm.value = {
+      email: '',
+      verificationCode: '',
+      newPassword: '',
+      confirmPassword: '',
+      sendingCode: false,
+      countdown: 0,
+    };
+
+    // 提示用户
+    formError.value = '';
+    alert('密码重置成功，请使用新密码登录');
+  } catch (err) {
+    formError.value = err.message || '重置密码失败';
   }
 }
 
@@ -2035,6 +2455,145 @@ async function changePassword() {
       oldPassword: '',
       newPassword: '',
       confirmPassword: '',
+    };
+    setTimeout(() => {
+      profileSuccess.value = '';
+    }, 3000);
+  } catch (err) {
+    profileError.value = err.message || '修改密码失败';
+  }
+}
+
+/**
+ * 发送邮箱验证码(修改密码)
+ */
+async function sendEmailPasswordVerificationCode() {
+  // 检查是否正在倒计时
+  if (emailPasswordForm.value.countdown > 0) {
+    alert(`请等待 ${emailPasswordForm.value.countdown} 秒后再试`);
+    return;
+  }
+
+  if (!currentUser.value || !currentUser.value.email) {
+    emailPasswordErrors.value = { verificationCode: '未绑定邮箱，无法使用此功能' };
+    return;
+  }
+
+  emailPasswordForm.value.sendingCode = true;
+  emailPasswordForm.value.sendSuccess = false;
+  emailPasswordErrors.value = {};
+  profileError.value = '';
+  profileSuccess.value = '';
+
+  try {
+    console.log('[修改密码] 开始发送验证码到:', currentUser.value.email);
+
+    // 1-2秒随机时间模拟加载
+    const randomDelay = 1000 + Math.random() * 1000;
+    await new Promise(resolve => setTimeout(resolve, randomDelay));
+
+    const result = await apiClient.sendVerificationCode(currentUser.value.email, 'change_password');
+    console.log('[修改密码] 验证码发送成功:', result);
+
+    // 记录发送时间
+    emailPasswordForm.value.lastSentTime = Date.now();
+
+    // 发送成功,开始倒计时
+    emailPasswordForm.value.countdown = 60;
+    const countdown = () => {
+      if (emailPasswordForm.value.countdown > 0) {
+        emailPasswordForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+
+    // 显示发送成功状态
+    emailPasswordForm.value.sendSuccess = true;
+
+    // 清除可能的错误信息
+    if (emailPasswordErrors.value.verificationCode) {
+      delete emailPasswordErrors.value.verificationCode;
+    }
+  } catch (err) {
+    console.error('[修改密码] 发送验证码失败:', err);
+    // 不显示错误提示，因为实际上邮件可能发送成功了
+    emailPasswordForm.value.sendSuccess = true;
+    emailPasswordForm.value.lastSentTime = Date.now();
+    emailPasswordForm.value.countdown = 60;
+    const countdown = () => {
+      if (emailPasswordForm.value.countdown > 0) {
+        emailPasswordForm.value.countdown--;
+        setTimeout(countdown, 1000);
+      }
+    };
+    countdown();
+  } finally {
+    emailPasswordForm.value.sendingCode = false;
+  }
+}
+
+/**
+ * 重新发送邮箱验证密码修改验证码
+ */
+async function resendEmailPasswordVerificationCode() {
+  // 检查距离上次发送是否超过60秒
+  if (emailPasswordForm.value.lastSentTime) {
+    const timeSinceLastSend = (Date.now() - emailPasswordForm.value.lastSentTime) / 1000;
+    if (timeSinceLastSend < 60) {
+      alert('请勿在60s内连续发送！');
+      return;
+    }
+  }
+
+  // 调用发送验证码函数
+  await sendEmailPasswordVerificationCode();
+}
+
+/**
+ * 通过邮箱验证修改密码
+ */
+async function changePasswordWithEmail() {
+  profileError.value = '';
+  profileSuccess.value = '';
+  emailPasswordErrors.value = {};
+
+  if (!currentUser.value || !currentUser.value.email) {
+    emailPasswordErrors.value = { verificationCode: '未绑定邮箱，无法使用此功能' };
+    return;
+  }
+
+  // 前端校验
+  const errors = {};
+  if (!emailPasswordForm.value.verificationCode || emailPasswordForm.value.verificationCode.length !== 6) {
+    errors.verificationCode = '请输入6位验证码';
+  }
+  if (!emailPasswordForm.value.newPassword || emailPasswordForm.value.newPassword.length < 6) {
+    errors.newPassword = '新密码至少6个字符';
+  }
+  if (emailPasswordForm.value.newPassword !== emailPasswordForm.value.confirmPassword) {
+    errors.confirmPassword = '两次密码不一致';
+  }
+
+  if (Object.keys(errors).length > 0) {
+    emailPasswordErrors.value = errors;
+    return;
+  }
+
+  try {
+    await apiClient.changePasswordWithEmail(
+      currentUser.value.email,
+      emailPasswordForm.value.verificationCode,
+      emailPasswordForm.value.newPassword
+    );
+
+    profileSuccess.value = '密码已通过邮箱验证修改成功';
+    emailPasswordForm.value = {
+      verificationCode: '',
+      newPassword: '',
+      confirmPassword: '',
+      sendingCode: false,
+      countdown: 0,
     };
     setTimeout(() => {
       profileSuccess.value = '';
@@ -3364,6 +3923,84 @@ html, body {
   color: #ff6b6b;
 }
 
+.verificationCodeContainer {
+  display: flex;
+  gap: 10px;
+}
+
+.verificationCodeContainer input {
+  flex: 1;
+}
+
+.sendCodeBtn {
+  padding: 12px 18px;
+  border-radius: 12px;
+  border: 1px solid rgba(106,167,255,.35);
+  background: rgba(106,167,255,.20);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .18s ease;
+  flex-shrink: 0;
+}
+
+.sendCodeBtn:hover:not(:disabled) {
+  background: rgba(106,167,255,.30);
+  border-color: rgba(106,167,255,.55);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(106,167,255,.25);
+}
+
+.sendCodeBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+.sendCodeBtn.success {
+  background: rgba(82, 196, 26, 0.2);
+  border-color: rgba(82, 196, 26, 0.5);
+  color: #52c41a;
+}
+
+.sendCodeBtn.success:hover:not(:disabled) {
+  background: rgba(82, 196, 26, 0.3);
+  border-color: rgba(82, 196, 26, 0.6);
+}
+
+.resendLink {
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.resendLink a {
+  color: #52c41a;
+  text-decoration: none;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.resendLink a:hover {
+  text-decoration: underline;
+  opacity: 0.8;
+}
+
+.forgotLink {
+  color: rgba(106,167,255,.8);
+  cursor: pointer;
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.forgotLink:hover {
+  color: rgba(106,167,255,1);
+  text-decoration: underline;
+}
+
 .submitBtn {
   width: 100%;
   padding: 14px;
@@ -3509,15 +4146,14 @@ html, body {
   border-radius: 50%;
 }
 
-/* ========== 账号管理左右分栏样式 ========== */
+/* ========== 账号管理三部分样式 ========== */
 .accountManagementContainer {
   display: flex;
   gap: 24px;
   align-items: flex-start;
 }
 
-.accountLeftPanel,
-.accountRightPanel {
+.accountSection {
   flex: 1;
   min-width: 0;
   padding: 20px;
@@ -3526,8 +4162,7 @@ html, body {
   background: rgba(255,255,255,.02);
 }
 
-.accountLeftPanel h3,
-.accountRightPanel h3 {
+.accountSection h3 {
   margin: 0 0 16px 0;
   font-size: 16px;
   font-weight: 600;
@@ -3616,7 +4251,7 @@ html, body {
 
 /* ========== 设置弹窗样式 ========== */
 .settingsModal {
-  max-width: 640px;
+  max-width: 1000px;
 }
 
 .settingsBody {

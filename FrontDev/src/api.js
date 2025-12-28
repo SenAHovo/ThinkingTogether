@@ -303,13 +303,14 @@ class ApiClient {
    * 用户注册
    * POST /api/auth/register
    */
-  async register(username, password, email = null, avatarUrl = null) {
+  async register(username, password, email, verificationCode, avatarUrl = null) {
     const result = await this.request('/auth/register', {
       method: 'POST',
       body: JSON.stringify({
         username,
         password,
         email,
+        verification_code: verificationCode,
         avatar_url: avatarUrl,
       }),
     });
@@ -738,6 +739,52 @@ class ApiClient {
     return this.request('/user/password', {
       method: 'PUT',
       body: JSON.stringify({ old_password: oldPassword, new_password: newPassword }),
+    });
+  }
+
+  // ========== 邮箱验证 API ==========
+
+  /**
+   * 发送验证码
+   * POST /api/auth/send-verification-code
+   */
+  async sendVerificationCode(email, purpose) {
+    return this.request('/auth/send-verification-code', {
+      method: 'POST',
+      body: JSON.stringify({ email, purpose }),
+    });
+  }
+
+  /**
+   * 验证验证码
+   * POST /api/auth/verify-code
+   */
+  async verifyCode(email, code, purpose) {
+    return this.request('/auth/verify-code', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, purpose }),
+    });
+  }
+
+  /**
+   * 重置密码
+   * POST /api/auth/reset-password
+   */
+  async resetPassword(email, code, newPassword) {
+    return this.request('/auth/reset-password', {
+      method: 'POST',
+      body: JSON.stringify({ email, code, new_password: newPassword }),
+    });
+  }
+
+  /**
+   * 通过邮箱验证码修改密码
+   * PUT /api/user/change-password-with-email
+   */
+  async changePasswordWithEmail(email, code, newPassword) {
+    return this.request('/user/change-password-with-email', {
+      method: 'PUT',
+      body: JSON.stringify({ email, code, new_password: newPassword }),
     });
   }
 

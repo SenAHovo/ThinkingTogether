@@ -7,6 +7,10 @@ from __future__ import annotations
 
 import os
 import sys
+from dotenv import load_dotenv
+
+# 加载.env文件
+load_dotenv()
 import uuid
 import asyncio
 import zipfile
@@ -36,6 +40,10 @@ from dev.auth.auth_utils import (
     generate_user_id,
     generate_session_id,
 )
+
+# 导入邮件验证模块
+from dev.email.verification import VerificationCodeManager
+from dev.email.email_service import email_service
 
 from dev.agents.organizer_agent import OrganizerAgent
 from dev.agents.theorist_tool import theorist_speak
@@ -73,6 +81,16 @@ try:
 except Exception as e:
     print(f"[API] 数据库初始化失败: {e}，仅支持游客模式（无法登录/注册）")
     _db_manager = None
+
+
+# 初始化验证码管理器
+_verification_manager = None
+if _db_config:
+    try:
+        _verification_manager = VerificationCodeManager(_db_config)
+        print("[API] 验证码管理器初始化成功")
+    except Exception as e:
+        print(f"[API] 验证码管理器初始化失败: {e}")
 
 
 def create_thread_local_connection():
@@ -300,7 +318,8 @@ class SendMessageRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str
     password: str
-    email: Optional[str] = None
+    email: str  # 改为必填
+    verification_code: str  # 添加验证码字段
     avatar_url: Optional[str] = None
 
 
@@ -317,6 +336,33 @@ class UserResponse(BaseModel):
     role: str
     is_active: bool
     is_verified: bool
+
+
+class SendVerificationCodeRequest(BaseModel):
+    """发送验证码请求"""
+    email: str
+    purpose: str  # register, reset_password, change_password, bind_email
+
+
+class VerifyCodeRequest(BaseModel):
+    """验证验证码请求"""
+    email: str
+    code: str
+    purpose: str
+
+
+class ResetPasswordRequest(BaseModel):
+    """重置密码请求"""
+    email: str
+    code: str
+    new_password: str
+
+
+class ChangePasswordWithEmailRequest(BaseModel):
+    """通过邮箱验证码修改密码请求"""
+    email: str
+    code: str
+    new_password: str
 
 
 class ChatResponse(BaseModel):
@@ -875,10 +921,16 @@ async def register(request: RegisterRequest):
                 raise HTTPException(status_code=400, detail="用户名已存在")
 
             # 检查邮箱是否已存在
-            if request.email:
-                cursor.execute("SELECT user_id FROM users WHERE email = %s", (request.email,))
-                if cursor.fetchone():
-                    raise HTTPException(status_code=400, detail="邮箱已被注册")
+            cursor.execute("SELECT user_id FROM users WHERE email = %s", (request.email,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="邮箱已被注册")
+
+            # 验证邮箱验证码
+            if not _verification_manager:
+                raise HTTPException(status_code=503, detail="验证码服务不可用")
+
+            if not _verification_manager.verify_code(request.email, request.verification_code, "register"):
+                raise HTTPException(status_code=400, detail="验证码无效或已过期")
 
             # 创建用户
             user_id = generate_user_id()
@@ -895,7 +947,7 @@ async def register(request: RegisterRequest):
                 request.avatar_url,
                 "user",  # 注册用户默认角色为 user
                 True,
-                False
+                True  # 邮箱已验证,设置为True
             ))
 
             # 生成访问令牌
@@ -3560,6 +3612,218 @@ async def delete_banned_word(
     except Exception as e:
         print(f"[API] 删除违禁词失败: {e}")
         raise HTTPException(status_code=500, detail="删除违禁词失败")
+
+
+# ========== 邮箱验证相关 API ==========
+
+@app.post("/api/auth/send-verification-code")
+async def send_verification_code(request: SendVerificationCodeRequest):
+    """
+    发送验证码到邮箱
+
+    用途:
+    - register: 注册验证
+    - reset_password: 重置密码
+    - change_password: 修改密码
+    - bind_email: 绑定邮箱
+    """
+    print(f"[API] 收到发送验证码请求: {request.email}, 用途: {request.purpose}")
+
+    if not _verification_manager:
+        raise HTTPException(status_code=503, detail="验证码服务不可用")
+
+    # 验证邮箱格式
+    if "@" not in request.email or "." not in request.email:
+        raise HTTPException(status_code=400, detail="邮箱格式不正确")
+
+    # 验证purpose参数
+    valid_purposes = ["register", "reset_password", "change_password", "bind_email"]
+    if request.purpose not in valid_purposes:
+        raise HTTPException(status_code=400, detail="无效的验证码用途")
+
+    try:
+        # 检查发送频率限制
+        if not _verification_manager.check_rate_limit(request.email, request.purpose, 60):
+            print(f"[API] 发送频率限制触发: {request.email}")
+            raise HTTPException(status_code=429, detail="发送过于频繁，请60秒后再试")
+
+        # 生成验证码
+        print(f"[API] 开始生成验证码: {request.email}")
+        code = _verification_manager.create_verification_code(
+            email=request.email,
+            purpose=request.purpose,
+            expiry_minutes=10
+        )
+
+        if not code:
+            print(f"[API] 验证码生成失败")
+            raise HTTPException(status_code=500, detail="生成验证码失败")
+
+        print(f"[API] 验证码生成成功: {code}")
+
+        # 发送邮件
+        print(f"[API] 开始发送邮件: {request.email}")
+        success = email_service.send_verification_code(
+            recipient_email=request.email,
+            code=code,
+            purpose=request.purpose
+        )
+
+        print(f"[API] 邮件发送结果: {success}")
+
+        if not success:
+            print(f"[API] 邮件发送失败")
+            raise HTTPException(status_code=500, detail="发送邮件失败")
+
+        print(f"[API] 验证码发送成功: {request.email}")
+        return {
+            "message": "验证码已发送",
+            "email": request.email,
+            "expires_in": 600  # 10分钟 = 600秒
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 发送验证码失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"发送验证码失败: {str(e)}")
+
+
+@app.post("/api/auth/verify-code")
+async def verify_code(request: VerifyCodeRequest):
+    """
+    验证验证码是否有效
+    """
+    if not _verification_manager:
+        raise HTTPException(status_code=503, detail="验证码服务不可用")
+
+    try:
+        is_valid = _verification_manager.verify_code(
+            email=request.email,
+            code=request.code,
+            purpose=request.purpose
+        )
+
+        if not is_valid:
+            raise HTTPException(status_code=400, detail="验证码无效或已过期")
+
+        return {
+            "message": "验证码有效",
+            "valid": True
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 验证验证码失败: {e}")
+        raise HTTPException(status_code=500, detail=f"验证失败: {str(e)}")
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(request: ResetPasswordRequest):
+    """
+    通过邮箱验证码重置密码
+    """
+    if not _verification_manager or not _db_manager:
+        raise HTTPException(status_code=503, detail="服务不可用")
+
+    # 验证密码长度
+    if len(request.new_password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少6个字符")
+
+    try:
+        # 验证验证码
+        if not _verification_manager.verify_code(
+            email=request.email,
+            code=request.code,
+            purpose="reset_password"
+        ):
+            raise HTTPException(status_code=400, detail="验证码无效或已过期")
+
+        # 查找用户
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute("SELECT user_id FROM users WHERE email = %s", (request.email,))
+            user = cursor.fetchone()
+
+            if not user:
+                raise HTTPException(status_code=404, detail="该邮箱未注册")
+
+            user_id = user["user_id"]
+
+            # 更新密码
+            password_hash = hash_password(request.new_password)
+            cursor.execute(
+                "UPDATE users SET password_hash = %s WHERE user_id = %s",
+                (password_hash, user_id)
+            )
+
+            print(f"[API] 用户 {user_id} 通过邮箱重置密码成功")
+
+            return {"message": "密码重置成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 重置密码失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"重置密码失败: {str(e)}")
+
+
+@app.put("/api/user/change-password-with-email")
+async def change_password_with_email(
+    request: ChangePasswordWithEmailRequest,
+    current_user: Dict[str, Any] = Depends(get_current_user)
+):
+    """
+    已登录用户通过邮箱验证码修改密码
+    """
+    if not _verification_manager or not _db_manager:
+        raise HTTPException(status_code=503, detail="服务不可用")
+
+    if not current_user:
+        raise HTTPException(status_code=401, detail="请先登录")
+
+    # 验证密码长度
+    if len(request.new_password) < 6:
+        raise HTTPException(status_code=400, detail="密码至少6个字符")
+
+    try:
+        # 验证邮箱是否属于当前用户
+        if current_user.get("email") != request.email:
+            raise HTTPException(status_code=400, detail="邮箱与当前用户不匹配")
+
+        # 验证验证码
+        if not _verification_manager.verify_code(
+            email=request.email,
+            code=request.code,
+            purpose="change_password"
+        ):
+            raise HTTPException(status_code=400, detail="验证码无效或已过期")
+
+        # 更新密码
+        user_id = current_user["user_id"]
+        password_hash = hash_password(request.new_password)
+
+        with _db_manager.get_cursor() as cursor:
+            cursor.execute(
+                "UPDATE users SET password_hash = %s WHERE user_id = %s",
+                (password_hash, user_id)
+            )
+
+            print(f"[API] 用户 {user_id} 通过邮箱验证码修改密码成功")
+
+            return {"message": "密码修改成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[API] 修改密码失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"修改密码失败: {str(e)}")
 
 
 # ========== 异常处理 ==========
