@@ -11,6 +11,7 @@ import uuid
 import asyncio
 import zipfile
 import io
+import pymysql
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -55,8 +56,11 @@ from types import SimpleNamespace
 # 尝试导入数据库管理器
 _db_manager = None
 _db_available = False  # 单独跟踪数据库可用性
+_db_config = None  # 保存数据库配置
 try:
     from dev.mysql.db_utils import DatabaseManager, ensure_db_connected
+    from dev.mysql.db_config import get_db_config
+    _db_config = get_db_config()
     _db_manager = DatabaseManager.from_config()
 
     # 尝试连接数据库
@@ -69,6 +73,26 @@ try:
 except Exception as e:
     print(f"[API] 数据库初始化失败: {e}，仅支持游客模式（无法登录/注册）")
     _db_manager = None
+
+
+def create_thread_local_connection():
+    """为线程创建独立的数据库连接，避免多线程共享连接导致的问题"""
+    if not _db_config:
+        return None
+    try:
+        conn = pymysql.connect(
+            host=_db_config['host'],
+            user=_db_config['user'],
+            password=_db_config['password'],
+            database=_db_config['database'],
+            port=_db_config['port'],
+            charset=_db_config['charset'],
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        return conn
+    except Exception as e:
+        print(f"[API] 创建线程独立数据库连接失败: {e}")
+        return None
 
 # ========== 违禁词检测（Trie树） ==========
 
@@ -329,7 +353,7 @@ def get_timestamp() -> str:
 
 
 async def get_current_user(authorization: Optional[str] = Header(None)) -> Optional[Dict[str, Any]]:
-    """从请求头中获取当前用户（非阻塞）"""
+    """从请求头中获取当前用户（同步数据库查询）"""
     if not authorization:
         return None
 
@@ -341,30 +365,25 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> Optio
         if not payload or payload.get("type") != "access":
             return None
 
-        # 从数据库获取用户信息（如果数据库可用）- 使用线程池避免阻塞
+        # 从数据库获取用户信息（如果数据库可用）- 使用同步查询
         if _db_manager and _db_manager.connection:
             try:
-                loop = asyncio.get_event_loop()
-
-                def fetch_user_from_db():
-                    with _db_manager.get_cursor() as cursor:
-                        cursor.execute(
-                            "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
-                            (payload.get("user_id"),)
-                        )
-                        return cursor.fetchone()
-
-                user = await loop.run_in_executor(executor, fetch_user_from_db)
-                if user:
-                    return {
-                        "user_id": user["user_id"],
-                        "username": user["username"],
-                        "email": user["email"],
-                        "avatar_url": user["avatar_url"],
-                        "role": user["role"],
-                        "is_active": user["is_active"],
-                        "is_verified": user["is_verified"],
-                    }
+                with _db_manager.get_cursor() as cursor:
+                    cursor.execute(
+                        "SELECT user_id, username, email, avatar_url, role, is_active, is_verified FROM users WHERE user_id = %s",
+                        (payload.get("user_id"),)
+                    )
+                    user = cursor.fetchone()
+                    if user:
+                        return {
+                            "user_id": user["user_id"],
+                            "username": user["username"],
+                            "email": user["email"],
+                            "avatar_url": user["avatar_url"],
+                            "role": user["role"],
+                            "is_active": user["is_active"],
+                            "is_verified": user["is_verified"],
+                        }
             except Exception as db_err:
                 # 数据库查询失败，返回None
                 print(f"[API] 警告: 无法从数据库获取用户信息: {db_err}")
@@ -380,13 +399,12 @@ def get_timestamp() -> str:
     return datetime.now().strftime("%m/%d %H:%M")
 
 
-async def get_session(chat_id: str) -> Dict[str, Any]:
-    """获取或创建会话（非阻塞）"""
+def get_session(chat_id: str) -> Dict[str, Any]:
+    """获取或创建会话"""
     if chat_id not in sessions:
-        # 尝试从数据库加载 - 使用线程池避免阻塞
+        # 尝试从数据库加载
         if _db_manager:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(executor, load_session_from_db, chat_id)
+            load_session_from_db(chat_id)
         if chat_id not in sessions:
             raise HTTPException(status_code=404, detail="会话不存在")
     return sessions[chat_id]
@@ -621,6 +639,109 @@ def call_companion(
     utterance = getattr(out, "utterance", str(out))
     utterance = rewrite_if_needed(utterance)
     return utterance
+
+
+def call_organizer_open(organizer: OrganizerAgent, topic: str, history_tail: list):
+    """调用组织者开场（同步函数，用于在线程池中执行）"""
+    return organizer.open(topic, history_tail)
+
+
+async def process_user_message_in_background(chat_id: str, session: Dict[str, Any], content: str):
+    """
+    在后台处理用户消息并生成AI响应（非阻塞）
+    处理流程：用户发言 -> 组织者路由 -> 智能体回应 -> 更新状态 -> 推送到前端
+    """
+    try:
+        state = session["state"]
+        organizer = session["organizer"]
+
+        # 分析并选择合适的智能体回应（使用线程池执行LLM调用）
+        loop = asyncio.get_event_loop()
+
+        # 1. 调用组织者路由（如果需要）
+        responder = None
+        task_hint = None
+
+        # 简单的关键词匹配不需要LLM调用
+        if any(kw in content.lower() for kw in ["什么是", "如何", "怎么", "为什么", "哪些"]):
+            responder = "理论家"
+            task_hint = f"【用户提问】用户刚才问：\"{content}\"\n你的任务：直接回答这个具体问题，不要偏离主题。用简单的例子说明，让用户能理解。"
+        elif any(kw in content.lower() for kw in ["技能", "框架", "工具", "方法", "步骤", "怎么做"]):
+            responder = "实践者"
+            task_hint = f"【用户需求】用户想了解：\"{content}\"\n你的任务：给出可操作的建议和具体步骤，避免空泛的理论。"
+        elif any(kw in content.lower() for kw in ["对吗", "真的", "但是", "不对", "有问题"]):
+            responder = "质疑者"
+            task_hint = f"【用户质疑/反馈】用户说：\"{content}\"\n你的任务：认真回应用户的观点，指出可能的问题或盲点，但保持友善。"
+        else:
+            # 需要调用组织者路由（LLM调用）
+            decision = await loop.run_in_executor(
+                executor,
+                lambda: organizer.route(state, history_store.tail(state.thread_id, 12))
+            )
+            responder = decision["next_speaker"]
+            task_hint = f"【用户发言】用户刚才说：\"{content}\"\n{decision['task_hint']}\n重要：你的回应必须与用户的这个发言产生直接对话关系，不要忽略用户的需求！"
+
+        # 2. 调用智能体回应用户（LLM调用）
+        response = await loop.run_in_executor(
+            executor,
+            call_companion,
+            responder,
+            state,
+            task_hint,
+            None,
+            8,
+        )
+
+        # 3. 记录回应
+        history_store.record_speaker(state.thread_id, responder, response)
+        advance_turn(state, responder)
+
+        # 4. 更新状态（LLM调用）
+        patch = await loop.run_in_executor(
+            executor,
+            lambda: organizer.update_from_new_public_event(state, history_store.tail(state.thread_id, 12))
+        )
+        apply_patch(state, patch)
+
+        # 5. 创建AI消息
+        role_id_map = {
+            "理论家": "theorist",
+            "实践者": "practitioner",
+            "质疑者": "skeptic",
+            "组织者": "facilitator",
+        }
+
+        ai_msg = {
+            "message_id": uuid.uuid4().hex,
+            "chat_id": chat_id,
+            "author_id": role_id_map.get(responder, "theorist"),
+            "author_name": responder,
+            "content": response,
+            "timestamp": get_current_time(),
+            "role": responder,
+        }
+
+        # 6. 添加到会话
+        session["messages"].append(ai_msg)
+        session["updated_at"] = get_timestamp()
+
+        # 7. 通过WebSocket推送到前端
+        await send_to_websocket(chat_id, {
+            "type": "new_message",
+            "message": ai_msg,
+            "updated_at": session["updated_at"]
+        })
+
+        print(f"[API] 用户消息的AI响应已推送到前端: chat_id={chat_id}")
+    except Exception as e:
+        print(f"[API] 后台处理用户消息失败: {e}")
+        import traceback
+        traceback.print_exc()
+        # 推送错误消息到前端
+        await send_to_websocket(chat_id, {
+            "type": "error",
+            "message": f"智能体响应失败: {str(e)}"
+        })
 
 
 async def process_agent_turn(chat_id: str, session: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1100,7 +1221,7 @@ async def create_chat(
     background_tasks: BackgroundTasks,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
-    """创建新对话（使用后台任务生成AI响应，避免阻塞API）"""
+    """创建新对话（使用线程池生成组织者开场，避免阻塞API）"""
     thread_id = uuid.uuid4().hex[:12]
     chat_id = thread_id
     topic = request.topic
@@ -1122,8 +1243,16 @@ async def create_chat(
         history_store.record_user(thread_id, topic, tags=["topic"], topic=topic)
         advance_turn(state, "用户")
 
-        # 组织者开场
-        opening, agenda_items, active_item_id = organizer.open(topic, history_store.tail(thread_id, 8))
+        # ========== 使用线程池执行组织者开场（非阻塞） ==========
+        loop = asyncio.get_event_loop()
+        opening, agenda_items, active_item_id = await loop.run_in_executor(
+            executor,
+            call_organizer_open,
+            organizer,
+            topic,
+            history_store.tail(thread_id, 8)
+        )
+        # ============================================================
         opening = rewrite_if_needed(opening)
         history_store.record_speaker(thread_id, "组织者", opening, tags=["opening"])
         advance_turn(state, "组织者")
@@ -1152,7 +1281,17 @@ async def create_chat(
     else:
         # 游客：只初始化状态，不保存到数据库
         advance_turn(state, "用户")
-        opening, agenda_items, active_item_id = organizer.open(topic, [])
+
+        # ========== 使用线程池执行组织者开场（非阻塞） ==========
+        loop = asyncio.get_event_loop()
+        opening, agenda_items, active_item_id = await loop.run_in_executor(
+            executor,
+            call_organizer_open,
+            organizer,
+            topic,
+            []
+        )
+        # ============================================================
         opening = rewrite_if_needed(opening)
         advance_turn(state, "组织者")
         set_agenda(state, agenda_items, active_item_id)
@@ -1222,30 +1361,22 @@ async def get_chats(
     limit: int = 50,
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
-    """获取对话列表 - 根据用户过滤（非阻塞）"""
+    """获取对话列表 - 根据用户过滤"""
     chats = []
 
     # 获取当前用户ID
     user_id = current_user["user_id"] if current_user else None
 
-    # 首先从数据库获取历史对话（只获取当前用户的）- 使用线程池避免阻塞
+    # 首先从数据库获取历史对话（只获取当前用户的）
     if _db_manager and user_id:  # 只有登录用户才从数据库加载历史对话
         try:
-            loop = asyncio.get_event_loop()
-
-            def load_threads_from_db():
-                db_threads = _db_manager.get_threads_by_user(user_id, limit=limit)
-                for thread in db_threads:
-                    thread_id = thread.get('thread_id')
-                    # 如果不在内存中，需要加载
-                    if thread_id not in sessions:
-                        load_session_from_db(thread_id)
-                return db_threads
-
-            db_threads = await loop.run_in_executor(executor, load_threads_from_db)
-
+            db_threads = _db_manager.get_threads_by_user(user_id, limit=limit)
             for thread in db_threads:
                 thread_id = thread.get('thread_id')
+                # 如果不在内存中，需要加载
+                if thread_id not in sessions:
+                    load_session_from_db(thread_id)
+
                 # 现在从内存获取信息
                 if thread_id in sessions:
                     session = sessions[thread_id]
@@ -1401,7 +1532,7 @@ async def export_all_chats(
 @app.get("/api/chats/{chat_id}")
 async def get_chat(chat_id: str):
     """获取单个对话详情"""
-    session = await get_session(chat_id)
+    session = get_session(chat_id)
     return {
         "id": session["chat_id"],
         "title": session["title"],
@@ -1415,7 +1546,7 @@ async def get_chat(chat_id: str):
 @app.get("/api/chats/{chat_id}/messages")
 async def get_messages(chat_id: str, limit: int = 100, before: Optional[str] = None):
     """获取对话消息列表"""
-    session = await get_session(chat_id)
+    session = get_session(chat_id)
     messages = session["messages"]
 
     # 返回消息、更新时间和发布状态
@@ -1430,12 +1561,12 @@ async def get_messages(chat_id: str, limit: int = 100, before: Optional[str] = N
 
 @app.post("/api/messages")
 async def send_message(request: SendMessageRequest):
-    """发送消息并返回AI响应"""
+    """发送消息并返回AI响应（使用后台任务，非阻塞）"""
     chat_id = request.chat_id
     content = request.content.strip()
     action = request.action or "send"
 
-    session = await get_session(chat_id)
+    session = get_session(chat_id)
     state = session["state"]
     organizer = session["organizer"]
 
@@ -1461,85 +1592,35 @@ async def send_message(request: SendMessageRequest):
         session["messages"].append(user_msg)
         session["updated_at"] = get_timestamp()
 
-        # 如果用户输入了内容，分析并选择合适的智能体回应
-        # 增强提示词，强调必须回应用户的具体问题或观点
-        if any(kw in content.lower() for kw in ["什么是", "如何", "怎么", "为什么", "哪些"]):
-            responder = "理论家"
-            task_hint = f"【用户提问】用户刚才问：\"{content}\"\n你的任务：直接回答这个具体问题，不要偏离主题。用简单的例子说明，让用户能理解。"
-        elif any(kw in content.lower() for kw in ["技能", "框架", "工具", "方法", "步骤", "怎么做"]):
-            responder = "实践者"
-            task_hint = f"【用户需求】用户想了解：\"{content}\"\n你的任务：给出可操作的建议和具体步骤，避免空泛的理论。"
-        elif any(kw in content.lower() for kw in ["对吗", "真的", "但是", "不对", "有问题"]):
-            responder = "质疑者"
-            task_hint = f"【用户质疑/反馈】用户说：\"{content}\"\n你的任务：认真回应用户的观点，指出可能的问题或盲点，但保持友善。"
-        else:
-            # 从组织者获取下一个发言者，但增强用户关注
-            decision = organizer.route(state, history_store.tail(state.thread_id, 12))
-            responder = decision["next_speaker"]
-            # 在任务提示中强调用户输入
-            task_hint = f"【用户发言】用户刚才说：\"{content}\"\n{decision['task_hint']}\n重要：你的回应必须与用户的这个发言产生直接对话关系，不要忽略用户的需求！"
+        # ========== 创建后台任务处理AI响应（非阻塞） ==========
+        asyncio.create_task(process_user_message_in_background(chat_id, session, content))
+        # ===================================================
 
-        # 调用智能体回应用户，传递用户发言上下文
-        response = call_companion(
-            speaker=responder,
-            state=state,
-            task_hint=task_hint,
-            stance_hint=None,
-            tail_n=8,
-        )
-
-        # 记录回应
-        history_store.record_speaker(state.thread_id, responder, response)
-        advance_turn(state, responder)
-
-        # 更新状态
-        patch = organizer.update_from_new_public_event(state, history_store.tail(state.thread_id, 12))
-        apply_patch(state, patch)
-
-        role_id_map = {
-            "理论家": "theorist",
-            "实践者": "practitioner",
-            "质疑者": "skeptic",
-            "组织者": "facilitator",
-        }
-
-        ai_msg = {
-            "message_id": uuid.uuid4().hex,
-            "chat_id": chat_id,
-            "author_id": role_id_map.get(responder, "theorist"),
-            "author_name": responder,
-            "content": response,
-            "timestamp": get_current_time(),
-            "role": responder,
-        }
-        session["messages"].append(ai_msg)
-        session["updated_at"] = get_timestamp()
-
-        # 返回消息列表（包含新增的用户消息和AI消息）
+        # 立即返回，告诉前端AI正在处理
         return {
+            "message": "智能体正在思考中，请稍候...",
+            "chat_id": chat_id,
+            "status": "processing",
             "messages": session["messages"],
             "updated_at": session["updated_at"]
         }
 
     # 处理"继续"操作 - 让下一个智能体发言
-    agent_msg = await process_agent_turn(chat_id, session)
-    if agent_msg:
-        session["messages"].append(agent_msg)
-        session["updated_at"] = get_timestamp()
+    # 创建后台任务处理智能体调用，不阻塞其他请求
+    asyncio.create_task(process_agent_in_background(chat_id, session))
 
-        # 返回消息列表
-        return {
-            "messages": session["messages"],
-            "updated_at": session["updated_at"]
-        }
-
-    raise HTTPException(status_code=500, detail="无法生成响应")
+    # 立即返回响应，告诉前端智能体正在思考
+    return {
+        "message": "智能体正在思考中，请稍候...",
+        "chat_id": chat_id,
+        "status": "processing"
+    }
 
 
 @app.post("/api/chats/{chat_id}/continue")
 async def continue_chat(chat_id: str):
     """让AI继续发言（非阻塞）"""
-    session = await get_session(chat_id)
+    session = get_session(chat_id)
     if not session:
         raise HTTPException(status_code=404, detail="对话不存在")
 
@@ -1722,13 +1803,18 @@ async def export_chat(chat_id: str):
 
 @app.post("/api/chats/{chat_id}/summary")
 async def summarize_chat(chat_id: str):
-    """生成对话总结，对话继续进行"""
-    session = await get_session(chat_id)
+    """生成对话总结，对话继续进行（使用线程池，非阻塞）"""
+    session = get_session(chat_id)
     state = session["state"]
     organizer = session["organizer"]
 
-    # 组织者生成总结（不改变对话状态，保持继续进行）
-    summary = organizer.summarize(state, history_store.tail(state.thread_id, 20))
+    # ========== 使用线程池执行组织者总结（非阻塞） ==========
+    loop = asyncio.get_event_loop()
+    summary = await loop.run_in_executor(
+        executor,
+        lambda: organizer.summarize(state, history_store.tail(state.thread_id, 20))
+    )
+    # ============================================================
     summary = rewrite_if_needed(summary)
 
     # 记录总结到历史
@@ -2542,75 +2628,70 @@ async def get_public_chat_hall(
     current_user: Optional[Dict[str, Any]] = Depends(get_current_user)
 ):
     """
-    获取公开对话大厅列表（按点赞数和创建时间排序）（非阻塞）
+    获取公开对话大厅列表（按点赞数和创建时间排序）
     """
     if not _db_manager:
         raise HTTPException(status_code=503, detail="数据库未连接")
 
     try:
-        loop = asyncio.get_event_loop()
+        with _db_manager.get_cursor() as cursor:
+            # 查询已公开的对话
+            query = """
+                SELECT
+                    t.thread_id as id,
+                    t.topic as title,
+                    t.created_at,
+                    u.username,
+                    to_owners.publication_status,
+                    COUNT(DISTINCT tl.user_id) as like_count,
+                    COUNT(DISTINCT c.comment_id) as comment_count
+                FROM threads t
+                INNER JOIN thread_owners to_owners ON t.thread_id = to_owners.thread_id
+                LEFT JOIN users u ON to_owners.user_id = u.user_id
+                LEFT JOIN thread_likes tl ON t.thread_id = tl.thread_id
+                LEFT JOIN comments c ON t.thread_id = c.thread_id AND c.is_deleted = 0
+                WHERE to_owners.publication_status = 'published'
+                GROUP BY t.thread_id, t.topic, t.created_at, u.username, to_owners.publication_status
+                ORDER BY like_count DESC, t.created_at DESC
+                LIMIT %s OFFSET %s
+            """
 
-        def fetch_public_chats_from_db():
-            with _db_manager.get_cursor() as cursor:
-                # 查询已公开的对话
-                query = """
-                    SELECT
-                        t.thread_id as id,
-                        t.topic as title,
-                        t.created_at,
-                        u.username,
-                        to_owners.publication_status,
-                        COUNT(DISTINCT tl.user_id) as like_count,
-                        COUNT(DISTINCT c.comment_id) as comment_count
-                    FROM threads t
-                    INNER JOIN thread_owners to_owners ON t.thread_id = to_owners.thread_id
-                    LEFT JOIN users u ON to_owners.user_id = u.user_id
-                    LEFT JOIN thread_likes tl ON t.thread_id = tl.thread_id
-                    LEFT JOIN comments c ON t.thread_id = c.thread_id AND c.is_deleted = 0
-                    WHERE to_owners.publication_status = 'published'
-                    GROUP BY t.thread_id, t.topic, t.created_at, u.username, to_owners.publication_status
-                    ORDER BY like_count DESC, t.created_at DESC
-                    LIMIT %s OFFSET %s
-                """
+            cursor.execute(query, (limit, offset))
+            chats = cursor.fetchall()
 
-                cursor.execute(query, (limit, offset))
-                chats = cursor.fetchall()
+            # 获取当前用户点赞的所有对话ID
+            liked_thread_ids = set()
+            if current_user:
+                cursor.execute(
+                    "SELECT DISTINCT thread_id FROM thread_likes WHERE user_id = %s",
+                    (current_user['user_id'],)
+                )
+                liked_thread_ids = {row['thread_id'] for row in cursor.fetchall()}
 
-                # 获取当前用户点赞的所有对话ID
-                liked_thread_ids = set()
-                if current_user:
-                    cursor.execute(
-                        "SELECT DISTINCT thread_id FROM thread_likes WHERE user_id = %s",
-                        (current_user['user_id'],)
-                    )
-                    liked_thread_ids = {row['thread_id'] for row in cursor.fetchall()}
+            # 为每个对话添加消息预览和点赞状态
+            result = []
+            for chat in chats:
+                events = _db_manager.get_thread_events(chat['id'])
+                messages_preview = [
+                    {"author_id": e.get("agent_id", "user"),
+                     "author_name": e["speaker"],
+                     "content": e["content"]}
+                    for e in events[:3]
+                ]
 
-                # 为每个对话添加消息预览和点赞状态
-                result = []
-                for chat in chats:
-                    events = _db_manager.get_thread_events(chat['id'])
-                    messages_preview = [
-                        {"author_id": e.get("agent_id", "user"),
-                         "author_name": e["speaker"],
-                         "content": e["content"]}
-                        for e in events[:3]
-                    ]
+                result.append({
+                    "id": chat['id'],
+                    "title": chat['title'],
+                    "username": chat['username'],
+                    "created_at": chat['created_at'].isoformat() if chat['created_at'] else None,
+                    "publication_status": chat['publication_status'],
+                    "like_count": chat['like_count'],
+                    "comment_count": chat['comment_count'],
+                    "is_liked": chat['id'] in liked_thread_ids,
+                    "messages_preview": messages_preview
+                })
 
-                    result.append({
-                        "id": chat['id'],
-                        "title": chat['title'],
-                        "username": chat['username'],
-                        "created_at": chat['created_at'].isoformat() if chat['created_at'] else None,
-                        "publication_status": chat['publication_status'],
-                        "like_count": chat['like_count'],
-                        "comment_count": chat['comment_count'],
-                        "is_liked": chat['id'] in liked_thread_ids,
-                        "messages_preview": messages_preview
-                    })
-
-                return {"chats": result, "total": len(result)}
-
-        return await loop.run_in_executor(executor, fetch_public_chats_from_db)
+            return {"chats": result, "total": len(result)}
 
     except Exception as e:
         print(f"[API] 获取公开对话大厅失败: {e}")
@@ -3122,69 +3203,64 @@ async def get_dashboard_stats(
     current_user: Dict[str, Any] = Depends(require_admin)
 ):
     """
-    获取数据看板统计数据（非阻塞）
+    获取数据看板统计数据
     """
     if not _db_manager:
         raise HTTPException(status_code=503, detail="数据库未连接")
 
     try:
-        loop = asyncio.get_event_loop()
+        with _db_manager.get_cursor() as cursor:
+            # 用户总数
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'user'")
+            user_count = cursor.fetchone()['count']
 
-        def fetch_stats_from_db():
-            with _db_manager.get_cursor() as cursor:
-                # 用户总数
-                cursor.execute("SELECT COUNT(*) as count FROM users WHERE role = 'user'")
-                user_count = cursor.fetchone()['count']
+            # 管理员总数（admin + super_admin）
+            cursor.execute("SELECT COUNT(*) as count FROM users WHERE role IN ('admin', 'super_admin')")
+            admin_count = cursor.fetchone()['count']
 
-                # 管理员总数（admin + super_admin）
-                cursor.execute("SELECT COUNT(*) as count FROM users WHERE role IN ('admin', 'super_admin')")
-                admin_count = cursor.fetchone()['count']
+            # 总对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM threads")
+            thread_count = cursor.fetchone()['count']
 
-                # 总对话数量
-                cursor.execute("SELECT COUNT(*) as count FROM threads")
-                thread_count = cursor.fetchone()['count']
+            # 已发布对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'published'")
+            published_count = cursor.fetchone()['count']
 
-                # 已发布对话数量
-                cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'published'")
-                published_count = cursor.fetchone()['count']
+            # 违规对话数量
+            cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'rejected'")
+            violation_count = cursor.fetchone()['count']
 
-                # 违规对话数量
-                cursor.execute("SELECT COUNT(*) as count FROM thread_owners WHERE publication_status = 'rejected'")
-                violation_count = cursor.fetchone()['count']
+            # 评论总数
+            cursor.execute("SELECT COUNT(*) as count FROM comments")
+            comment_count = cursor.fetchone()['count']
 
-                # 评论总数
-                cursor.execute("SELECT COUNT(*) as count FROM comments")
-                comment_count = cursor.fetchone()['count']
+            # 今日活跃用户数（今日有评论、对话或登录的用户）
+            cursor.execute("""
+                SELECT COUNT(DISTINCT user_id) as count
+                FROM (
+                    SELECT user_id FROM threads WHERE DATE(created_at) = CURDATE()
+                    UNION
+                    SELECT user_id FROM comments WHERE DATE(created_at) = CURDATE()
+                    UNION
+                    SELECT user_id FROM user_sessions WHERE DATE(created_at) = CURDATE()
+                ) AS active_users
+                WHERE user_id IS NOT NULL AND user_id != ''
+            """)
+            active_users_today = cursor.fetchone()['count']
 
-                # 今日活跃用户数（今日有评论、对话或登录的用户）
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT user_id) as count
-                    FROM (
-                        SELECT user_id FROM threads WHERE DATE(created_at) = CURDATE()
-                        UNION
-                        SELECT user_id FROM comments WHERE DATE(created_at) = CURDATE()
-                        UNION
-                        SELECT user_id FROM user_sessions WHERE DATE(created_at) = CURDATE()
-                    ) AS active_users
-                    WHERE user_id IS NOT NULL AND user_id != ''
-                """)
-                active_users_today = cursor.fetchone()['count']
+            # 公开对话总数
+            public_chat_count = published_count
 
-                # 公开对话总数
-                public_chat_count = published_count
-
-                return {
-                    "user_count": user_count,
-                    "admin_count": admin_count,
-                    "thread_count": thread_count,
-                    "published_count": published_count,
-                    "violation_count": violation_count,
-                    "comment_count": comment_count,
-                    "active_users_today": active_users_today,
-                    "public_chat_count": public_chat_count,
-                }
-
-        return await loop.run_in_executor(executor, fetch_stats_from_db)
+            return {
+                "user_count": user_count,
+                "admin_count": admin_count,
+                "thread_count": thread_count,
+                "published_count": published_count,
+                "violation_count": violation_count,
+                "comment_count": comment_count,
+                "active_users_today": active_users_today,
+                "public_chat_count": public_chat_count,
+            }
 
     except Exception as e:
         print(f"[API] 获取数据看板统计失败: {e}")

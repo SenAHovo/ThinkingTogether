@@ -1189,6 +1189,10 @@ const inputPlaceholder = computed(() => {
 watch(activeChatId, (newId, oldId) => {
   if (newId) {
     setupWebSocket(newId);
+    // 切换对话时，滚动到底部显示最新消息
+    nextTick(() => {
+      scrollToBottom(false);
+    });
   }
 });
 
