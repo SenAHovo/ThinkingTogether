@@ -399,19 +399,30 @@ async function refreshPublicChats() {
 async function viewChatDetail(chat) {
   console.log('[PublicChats] Viewing chat detail:', chat.id, chat.title);
   viewingChat.value = true;
-  currentChat.value = chat;
 
   // 加载完整对话消息
   try {
     console.log('[PublicChats] Loading messages for chat:', chat.id);
     const result = await apiClient.getMessages(chat.id, 1000);
     console.log('[PublicChats] Messages loaded:', result.messages?.length);
+
+    // 获取最新的点赞状态
+    let likeStatus = { like_count: chat.like_count || 0, is_liked: false };
+    try {
+      likeStatus = await apiClient.getLikeStatus(chat.id);
+    } catch (err) {
+      console.warn('[PublicChats] 获取点赞状态失败，使用默认值:', err);
+    }
+
     currentChat.value = {
       ...chat,
-      messages: result.messages || []
+      messages: result.messages || [],
+      like_count: likeStatus.like_count,
+      is_liked: likeStatus.is_liked
     };
   } catch (err) {
     console.error('[PublicChats] 加载对话详情失败:', err);
+    currentChat.value = chat;
   }
 
   // 加载评论
@@ -421,8 +432,12 @@ async function viewChatDetail(chat) {
 /**
  * 返回列表
  */
-function backToList() {
+async function backToList() {
   console.log('[PublicChats] Returning to list view');
+
+  // 重新加载列表数据以获取最新的点赞状态和点赞数
+  await refreshPublicChats();
+
   viewingChat.value = false;
   currentChat.value = null;
   comments.value = [];

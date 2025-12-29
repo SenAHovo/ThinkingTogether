@@ -156,6 +156,7 @@ class EmailService:
             print(f"[ERROR] 邮件服务未配置，无法发送验证码到 {recipient_email}")
             return False
 
+        server = None
         try:
             # 获取邮件模板
             subject, html_content = self._create_email_template(purpose, code)
@@ -169,11 +170,14 @@ class EmailService:
             # 附加HTML内容
             msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 
-            # 建立SSL安全连接并发送
-            with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as server:
-                server.login(self.sender_email, self.sender_auth_code)
-                server.sendmail(self.sender_email, [recipient_email], msg.as_string())
+            # 建立SSL安全连接
+            server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
+            server.login(self.sender_email, self.sender_auth_code)
 
+            # 发送邮件 - 这是关键步骤
+            server.sendmail(self.sender_email, [recipient_email], msg.as_string())
+
+            # 如果sendmail没有抛出异常，说明邮件发送成功
             print(f"[SUCCESS] 验证码邮件已成功发送至 {recipient_email} (用途: {purpose})")
             return True
 
@@ -186,6 +190,14 @@ class EmailService:
         except Exception as e:
             print(f"[ERROR] 发送邮件时发生错误: {type(e).__name__}: {e}")
             return False
+        finally:
+            # 确保连接被正确关闭
+            if server is not None:
+                try:
+                    server.quit()
+                except:
+                    # 忽略关闭连接时的异常，因为邮件已经发送成功了
+                    pass
 
 
 # 创建全局实例

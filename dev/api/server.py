@@ -1815,11 +1815,30 @@ async def export_chat(chat_id: str):
         if timestamp:
             try:
                 if isinstance(timestamp, str):
-                    if '.' in timestamp:
+                    # 如果时间戳只包含时间 (如 "14:06" 或 "14:06:30")
+                    if timestamp.count(':') == 1:
+                        time_str = timestamp  # 直接使用
+                    elif timestamp.count(':') == 2 and len(timestamp) <= 8:
+                        time_str = timestamp[:5] if len(timestamp) >= 5 else timestamp  # 取 "HH:MM" 部分
+                    # 如果时间戳包含日期
+                    elif '.' in timestamp:
                         dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
+                        time_str = dt.strftime("%H:%M")
                     else:
-                        dt = datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S")
-                    time_str = dt.strftime("%H:%M")
+                        # 尝试多种日期时间格式
+                        formats = [
+                            "%Y-%m-%d %H:%M:%S",
+                            "%Y-%m-%d %H:%M",
+                            "%Y/%m/%d %H:%M:%S",
+                            "%Y/%m/%d %H:%M",
+                        ]
+                        for fmt in formats:
+                            try:
+                                dt = datetime.strptime(timestamp, fmt)
+                                time_str = dt.strftime("%H:%M")
+                                break
+                            except:
+                                continue
             except Exception as e:
                 print(f"[API] 时间戳格式化失败: {timestamp}, {e}")
 
@@ -1835,17 +1854,22 @@ async def export_chat(chat_id: str):
     from fastapi.responses import Response
     from urllib.parse import quote
 
-    # 清理文件名中的特殊字符
-    safe_title = "".join(c if c.isalnum() or c in (' ', '-', '_', '（', '）', '(', ')') else '_' for c in title)
+    # 创建纯ASCII的备用文件名（只保留ASCII字母、数字、连字符和下划线）
+    filename_ascii = "".join(c for c in title if ord(c) < 128 and (c.isalnum() or c in (' ', '-', '_')))
+    # 移除空格并替换为下划线
+    filename_ascii = filename_ascii.replace(' ', '_').replace('-', '_')
+    # 如果结果为空，使用默认文件名
+    if not filename_ascii or all(c == '_' for c in filename_ascii):
+        filename_ascii = "chat_export"
 
-    # 使用RFC 5987编码格式支持中文文件名
-    filename_ascii = f"{safe_title}.txt"
-    filename_utf8 = f"{safe_title}.txt"
-    encoded_filename = quote(filename_utf8.encode('utf-8'))
-    content_disposition = f"attachment; filename=\"{filename_ascii}\"; filename*=UTF-8''{encoded_filename}"
+    # URL编码文件名以支持中文（RFC 5987格式）
+    safe_filename = quote(title, safe='')
+
+    # 构建Content-Disposition header，确保只包含ASCII字符
+    content_disposition = f"attachment; filename=\"{filename_ascii}.txt\"; filename*=UTF-8''{safe_filename}.txt"
 
     return Response(
-        content=txt_content,
+        content=txt_content.encode('utf-8'),
         media_type="text/plain; charset=utf-8",
         headers={
             "Content-Disposition": content_disposition

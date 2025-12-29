@@ -10,7 +10,7 @@ const USER_KEY = 'current_user';
 
 // ========== 请求并发控制 ==========
 // 限制同时进行的请求数量，避免占用过多浏览器连接
-const MAX_CONCURRENT_REQUESTS = 4;
+const MAX_CONCURRENT_REQUESTS = 12;
 let activeRequests = 0;
 const requestQueue = [];
 
@@ -521,6 +521,14 @@ class ApiClient {
     return this.request(`/chats/${chatId}/like`, {
       method: 'DELETE',
     });
+  }
+
+  /**
+   * 获取对话点赞状态
+   * GET /api/chats/{chatId}/like-status
+   */
+  async getLikeStatus(chatId) {
+    return this.request(`/chats/${chatId}/like-status`);
   }
 
   // ========== 评论管理 API ==========
