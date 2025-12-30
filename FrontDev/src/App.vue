@@ -1289,41 +1289,100 @@ function setupWebSocket(chatId) {
       // 处理收到的消息
       console.log('[WebSocket] 收到消息:', data);
 
-      if (data.type === 'new_message') {
-        // 后端推送的新消息
-        const chat = chats.value.find(c => c.id === chatId);
-        if (chat) {
-          const msgId = data.message.message_id;
+      const chat = chats.value.find(c => c.id === chatId);
+      if (!chat) return;
 
-          // 检查消息是否已存在
-          if (!chat.messages.find(m => m.id === msgId)) {
-            // 移除loading消息
-            chat.messages = chat.messages.filter(m => !m.isLoading);
+      if (data.type === 'stream_start') {
+        // 流式开始：创建占位消息
+        const msgId = data.message.message_id;
+        const existingMsg = chat.messages.find(m => m.id === msgId);
 
-            // 添加新消息
-            chat.messages.push({
-              id: msgId,
-              authorId: data.message.author_id,
-              author_name: data.message.author_name,
-              text: data.message.content,
-              content: data.message.content,
-              time: data.message.timestamp,
-              role: data.message.role
-            });
-            chat.updatedAt = stamp();
-            console.log('[WebSocket] 新消息已添加:', data.message);
-          }
+        if (!existingMsg) {
+          // 移除loading消息
+          chat.messages = chat.messages.filter(m => !m.isLoading);
+
+          // 添加流式占位消息
+          chat.messages.push({
+            id: msgId,
+            authorId: data.message.author_id,
+            author_name: data.message.author_name,
+            text: '',
+            content: '',
+            time: data.message.timestamp,
+            role: data.message.role,
+            isStreaming: true
+          });
+          chat.updatedAt = stamp();
+          console.log('[WebSocket] 流式消息已创建:', msgId);
         }
+
+      } else if (data.type === 'stream_chunk') {
+        // 流式片段：追加内容
+        const msgId = data.message_id || data.message?.message_id;
+        const streamingMsg = chat.messages.find(m => m.id === msgId || m.isStreaming);
+
+        if (streamingMsg) {
+          streamingMsg.text += data.content;
+          streamingMsg.content += data.content;
+          console.log('[WebSocket] 流式片段已追加，长度:', streamingMsg.text.length);
+        }
+
+      } else if (data.type === 'stream_end') {
+        // 流结束：更新完整内容
+        const msgId = data.message_id || data.message?.message_id;
+        const msg = chat.messages.find(m => m.id === msgId);
+
+        if (msg) {
+          msg.text = data.full_content;
+          msg.content = data.full_content;
+          msg.isStreaming = false;
+          console.log('[WebSocket] 流式消息已完成:', msgId);
+        }
+
+      } else if (data.type === 'stream_complete') {
+        // 流完成：消息最终确认
+        const msgId = data.message.message_id;
+        const msg = chat.messages.find(m => m.id === msgId);
+
+        if (msg) {
+          // 更新消息内容
+          msg.text = data.message.content;
+          msg.content = data.message.content;
+          msg.isStreaming = false;
+          chat.updatedAt = data.updated_at || stamp();
+          console.log('[WebSocket] 流式消息最终完成:', data.message);
+        }
+
+      } else if (data.type === 'new_message') {
+        // 兼容旧版：后端推送的完整消息
+        const msgId = data.message.message_id;
+
+        // 检查消息是否已存在
+        if (!chat.messages.find(m => m.id === msgId)) {
+          // 移除loading消息
+          chat.messages = chat.messages.filter(m => !m.isLoading);
+
+          // 添加新消息
+          chat.messages.push({
+            id: msgId,
+            authorId: data.message.author_id,
+            author_name: data.message.author_name,
+            text: data.message.content,
+            content: data.message.content,
+            time: data.message.timestamp,
+            role: data.message.role
+          });
+          chat.updatedAt = stamp();
+          console.log('[WebSocket] 新消息已添加:', data.message);
+        }
+
       } else if (data.type === 'error') {
         // 后端推送的错误消息
         console.error('[WebSocket] 收到错误:', data.message);
-        const chat = chats.value.find(c => c.id === chatId);
-        if (chat) {
-          // 移除loading消息
-          chat.messages = chat.messages.filter(m => !m.isLoading);
-          // 显示错误提示
-          alert('智能体生成失败: ' + data.message);
-        }
+        // 移除loading消息和流式消息
+        chat.messages = chat.messages.filter(m => !m.isLoading && !m.isStreaming);
+        // 显示错误提示
+        alert('智能体生成失败: ' + data.message);
       }
     },
     (err) => {

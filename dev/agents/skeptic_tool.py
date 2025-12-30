@@ -1,7 +1,7 @@
 # agents/skeptic_tool.py
 from __future__ import annotations
 
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Callable
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
@@ -137,6 +137,115 @@ def skeptic_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
     hooks: List[Hook] = []
 
     # 质疑信号（非常粗略但实用）
+    if any(k in utterance for k in ["但", "未必", "前提", "证据", "反例", "成本", "风险", "漏洞", "假设"]):
+        hooks.append(Hook(kind="challenge", content="提出关键质疑/风险/前提条件"))
+
+    q = _extract_last_question(utterance)
+    if q:
+        hooks.append(Hook(kind="new_question", content=q))
+
+    return CompanionSpeakOutput(
+        speaker="质疑者",
+        utterance=utterance,
+        hooks=hooks,
+    )
+
+
+async def skeptic_speak_stream(req: CompanionSpeakInput, stream_callback: Callable) -> CompanionSpeakOutput:
+    """
+    质疑者工具流式版本：实时推送内容片段到前端
+    """
+    history: List[BaseMessage] = events_to_messages(req.transcript_tail)
+
+    active_q = _active_question_from_state(req.state)
+    tic = pick_tic(req.style)
+    taboos = taboos_text(req.style)
+
+    context_card = f"""
+【讨论状态】
+- 当前话题：{req.state.topic}
+- 当前焦点：{active_q or "（主持人尚未明确焦点/或暂不需要聚焦）"}
+- 主持人给你的任务提示：{req.task_hint or "（无）"}
+- 你的立场提示：{req.stance_hint or "（无）"}
+- 你的表达气质：{req.style.vibe}
+- 可选口头禅：{tic or "（无）"}
+- 禁忌：{taboos}
+
+【最重要的优先级】
+1. 如果最近一轮是【用户】发言，你必须优先回应用户的具体问题或观点！
+2. 用户参与这个讨论是为了得到有价值的回应，不要忽略用户的需求
+3. 你的回应应该让用户感觉"被听到了"和"被理解了"
+
+【重要提醒】
+- 必须针对最近1-2轮发言中的具体观点进行质疑
+- 及时回应新提出的观点或案例，不要延迟质疑
+- 质疑要有针对性，不要泛泛而谈
+- 提出建设性的替代观点或改进建议
+- CRITICAL: 你的质疑必须针对前面某人刚刚提出的具体观点！
+
+【发言要求】
+请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑。
+但不要只否定：要补一个"更稳的说法/必要条件/边界"，并抛出一个关键追问推动讨论。
+如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
+不要回到题目开头做总述，不要写清单/小标题/套话。
+输出1~2段口语自然段即可。
+"""
+
+    # 流式生成
+    prompt_messages = _prompt.invoke({"history": history, "context_card": context_card})
+    full_content = ""
+
+    async for chunk in llm_skeptic.astream(prompt_messages):
+        content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+        if content:
+            full_content += content
+            try:
+                await stream_callback({
+                    "type": "stream_chunk",
+                    "role": "skeptic",
+                    "speaker": "质疑者",
+                    "content": content
+                })
+            except Exception as e:
+                print(f"[ERROR] 流式推送失败: {e}")
+
+    utterance = clean_text(full_content)
+
+    # 反模板检查
+    if is_templated(utterance):
+        rewrite_card = build_rewrite_context(utterance)
+        rewrite_messages = _prompt.invoke({"history": history, "context_card": rewrite_card})
+        full_content = ""
+
+        async for chunk in llm_skeptic.astream(rewrite_messages):
+            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            if content:
+                full_content += content
+                try:
+                    await stream_callback({
+                        "type": "stream_chunk",
+                        "role": "skeptic",
+                        "speaker": "质疑者",
+                        "content": content
+                    })
+                except Exception as e:
+                    print(f"[ERROR] 重写流式推送失败: {e}")
+
+        utterance = clean_text(full_content)
+
+    # 推送流结束信号
+    try:
+        await stream_callback({
+            "type": "stream_end",
+            "role": "skeptic",
+            "speaker": "质疑者",
+            "full_content": utterance
+        })
+    except Exception as e:
+        print(f"[ERROR] 流结束信号推送失败: {e}")
+
+    hooks: List[Hook] = []
+
     if any(k in utterance for k in ["但", "未必", "前提", "证据", "反例", "成本", "风险", "漏洞", "假设"]):
         hooks.append(Hook(kind="challenge", content="提出关键质疑/风险/前提条件"))
 

@@ -24,7 +24,8 @@
       "Bash(cat:*)",
       "Bash(ls:*)",
       "Bash(copy:*)",
-      "Bash(if exist:*)"
+      "Bash(if exist:*)",
+      "Bash(powershell:*)"
     ],
     "deny": [],
     "ask": []

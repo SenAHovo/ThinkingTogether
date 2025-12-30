@@ -46,9 +46,9 @@ from dev.email.verification import VerificationCodeManager
 from dev.email.email_service import email_service
 
 from dev.agents.organizer_agent import OrganizerAgent
-from dev.agents.theorist_tool import theorist_speak
-from dev.agents.practitioner_tool import practitioner_speak
-from dev.agents.skeptic_tool import skeptic_speak
+from dev.agents.theorist_tool import theorist_speak, theorist_speak_stream
+from dev.agents.practitioner_tool import practitioner_speak, practitioner_speak_stream
+from dev.agents.skeptic_tool import skeptic_speak, skeptic_speak_stream
 from dev.agents.rewriter_tools import rewrite_if_needed
 from dev.memory.history_store import history_store, events_to_messages
 from dev.memory.state_store import (
@@ -266,6 +266,12 @@ TOOLS = {
     "理论家": theorist_speak,
     "实践者": practitioner_speak,
     "质疑者": skeptic_speak,
+}
+
+STREAM_TOOLS = {
+    "理论家": theorist_speak_stream,
+    "实践者": practitioner_speak_stream,
+    "质疑者": skeptic_speak_stream,
 }
 
 # ========== 线程池执行器（用于非阻塞LLM调用） ==========
@@ -692,10 +698,40 @@ def call_organizer_open(organizer: OrganizerAgent, topic: str, history_tail: lis
     return organizer.open(topic, history_tail)
 
 
+async def call_companion_stream_async(speaker: str, state: DiscussionState, task_hint: str, stance_hint: Optional[str], tail_n: int, stream_callback) -> str:
+    """异步流式调用智能体生成发言"""
+    transcript_tail = history_store.tail(state.thread_id, n=tail_n)
+
+    req = SimpleNamespace(
+        thread_id=state.thread_id,
+        speaker=speaker,
+        state=state,
+        transcript_tail=transcript_tail,
+        task_hint=task_hint,
+        stance_hint=stance_hint,
+        style=STYLE_BY_SPEAKER[speaker],
+        focus_on_latest=True,
+    )
+
+    # 调用流式函数
+    stream_func = STREAM_TOOLS.get(speaker)
+    if stream_func:
+        result = await stream_func(req, stream_callback)
+        utterance = getattr(result, "utterance", str(result))
+        utterance = rewrite_if_needed(utterance)
+        return utterance
+    else:
+        # 回退到同步调用
+        out = TOOLS[speaker](req)
+        utterance = getattr(out, "utterance", str(out))
+        utterance = rewrite_if_needed(utterance)
+        return utterance
+
+
 async def process_user_message_in_background(chat_id: str, session: Dict[str, Any], content: str):
     """
-    在后台处理用户消息并生成AI响应（非阻塞）
-    处理流程：用户发言 -> 组织者路由 -> 智能体回应 -> 更新状态 -> 推送到前端
+    在后台处理用户消息并生成AI响应（非阻塞，使用流式输出）
+    处理流程：用户发言 -> 组织者路由 -> 智能体流式回应 -> 更新状态 -> 推送到前端
     """
     try:
         state = session["state"]
@@ -727,29 +763,8 @@ async def process_user_message_in_background(chat_id: str, session: Dict[str, An
             responder = decision["next_speaker"]
             task_hint = f"【用户发言】用户刚才说：\"{content}\"\n{decision['task_hint']}\n重要：你的回应必须与用户的这个发言产生直接对话关系，不要忽略用户的需求！"
 
-        # 2. 调用智能体回应用户（LLM调用）
-        response = await loop.run_in_executor(
-            executor,
-            call_companion,
-            responder,
-            state,
-            task_hint,
-            None,
-            8,
-        )
-
-        # 3. 记录回应
-        history_store.record_speaker(state.thread_id, responder, response)
-        advance_turn(state, responder)
-
-        # 4. 更新状态（LLM调用）
-        patch = await loop.run_in_executor(
-            executor,
-            lambda: organizer.update_from_new_public_event(state, history_store.tail(state.thread_id, 12))
-        )
-        apply_patch(state, patch)
-
-        # 5. 创建AI消息
+        # 2. 创建WebSocket流式回调函数
+        message_id = uuid.uuid4().hex
         role_id_map = {
             "理论家": "theorist",
             "实践者": "practitioner",
@@ -757,8 +772,51 @@ async def process_user_message_in_background(chat_id: str, session: Dict[str, An
             "组织者": "facilitator",
         }
 
+        # 创建临时AI消息对象
+        temp_ai_msg = {
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "author_id": role_id_map.get(responder, "theorist"),
+            "author_name": responder,
+            "content": "",
+            "timestamp": get_current_time(),
+            "role": responder,
+        }
+
+        # 推送流开始消息
+        await send_to_websocket(chat_id, {
+            "type": "stream_start",
+            "message": temp_ai_msg
+        })
+
+        async def stream_callback(chunk_data: dict):
+            """流式回调函数，实时推送到前端"""
+            await send_to_websocket(chat_id, chunk_data)
+
+        # 3. 调用智能体流式回应用户
+        response = await call_companion_stream_async(
+            responder,
+            state,
+            task_hint,
+            None,
+            8,
+            stream_callback
+        )
+
+        # 4. 记录回应
+        history_store.record_speaker(state.thread_id, responder, response)
+        advance_turn(state, responder)
+
+        # 5. 更新状态（LLM调用）
+        patch = await loop.run_in_executor(
+            executor,
+            lambda: organizer.update_from_new_public_event(state, history_store.tail(state.thread_id, 12))
+        )
+        apply_patch(state, patch)
+
+        # 6. 创建完整的AI消息
         ai_msg = {
-            "message_id": uuid.uuid4().hex,
+            "message_id": message_id,
             "chat_id": chat_id,
             "author_id": role_id_map.get(responder, "theorist"),
             "author_name": responder,
@@ -767,18 +825,18 @@ async def process_user_message_in_background(chat_id: str, session: Dict[str, An
             "role": responder,
         }
 
-        # 6. 添加到会话
+        # 7. 添加到会话
         session["messages"].append(ai_msg)
         session["updated_at"] = get_timestamp()
 
-        # 7. 通过WebSocket推送到前端
+        # 8. 推送流完成消息
         await send_to_websocket(chat_id, {
-            "type": "new_message",
+            "type": "stream_complete",
             "message": ai_msg,
             "updated_at": session["updated_at"]
         })
 
-        print(f"[API] 用户消息的AI响应已推送到前端: chat_id={chat_id}")
+        print(f"[API] 用户消息的AI流式响应已完成: chat_id={chat_id}")
     except Exception as e:
         print(f"[API] 后台处理用户消息失败: {e}")
         import traceback
@@ -1689,35 +1747,102 @@ async def continue_chat(chat_id: str):
 
 async def process_agent_in_background(chat_id: str, session: Dict[str, Any]):
     """
-    在后台处理智能体发言（非阻塞）
-    智能体生成完成后，通过WebSocket推送结果到前端
+    在后台处理智能体发言（非阻塞，使用流式输出）
+    智能体生成过程中，通过WebSocket实时推送结果到前端
     """
     try:
-        # 处理智能体发言
-        agent_msg = await process_agent_turn(chat_id, session)
+        state = session["state"]
+        organizer = session["organizer"]
 
-        if agent_msg:
-            # 将消息添加到会话
-            session["messages"].append(agent_msg)
-            session["updated_at"] = get_timestamp()
+        # 组织者动态路由
+        loop = asyncio.get_event_loop()
+        decision = await loop.run_in_executor(
+            executor,
+            lambda: organizer.route(state, history_store.tail(state.thread_id, 12))
+        )
 
-            # 通过WebSocket推送新消息到前端
-            await send_to_websocket(chat_id, {
-                "type": "new_message",
-                "message": agent_msg,
-                "updated_at": session["updated_at"]
-            })
+        next_speaker = decision["next_speaker"]
+        task_hint = decision["task_hint"]
+        stance_hint = decision.get("stance_hint")
 
-            print(f"[API] 智能体发言已推送到前端: chat_id={chat_id}")
-        else:
-            # 智能体生成失败，推送错误消息
-            await send_to_websocket(chat_id, {
-                "type": "error",
-                "message": "智能体生成响应失败"
-            })
-            print(f"[API] 智能体发言生成失败: chat_id={chat_id}")
+        # 创建消息ID
+        message_id = uuid.uuid4().hex
+        role_id_map = {
+            "理论家": "theorist",
+            "实践者": "practitioner",
+            "质疑者": "skeptic",
+            "组织者": "facilitator",
+        }
+
+        # 创建临时AI消息对象
+        temp_ai_msg = {
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "author_id": role_id_map.get(next_speaker, "theorist"),
+            "author_name": next_speaker,
+            "content": "",
+            "timestamp": get_current_time(),
+            "role": next_speaker,
+        }
+
+        # 推送流开始消息
+        await send_to_websocket(chat_id, {
+            "type": "stream_start",
+            "message": temp_ai_msg
+        })
+
+        async def stream_callback(chunk_data: dict):
+            """流式回调函数，实时推送到前端"""
+            await send_to_websocket(chat_id, chunk_data)
+
+        # 调用流式智能体
+        utterance = await call_companion_stream_async(
+            next_speaker,
+            state,
+            task_hint,
+            stance_hint,
+            6,
+            stream_callback
+        )
+
+        # 记录发言
+        history_store.record_speaker(state.thread_id, next_speaker, utterance)
+        advance_turn(state, next_speaker)
+
+        # 更新状态
+        patch = await loop.run_in_executor(
+            executor,
+            lambda: organizer.update_from_new_public_event(state, history_store.tail(state.thread_id, 12))
+        )
+        apply_patch(state, patch)
+
+        # 创建完整的AI消息
+        agent_msg = {
+            "message_id": message_id,
+            "chat_id": chat_id,
+            "author_id": role_id_map.get(next_speaker, "theorist"),
+            "author_name": next_speaker,
+            "content": utterance,
+            "timestamp": get_current_time(),
+            "role": next_speaker,
+        }
+
+        # 将消息添加到会话
+        session["messages"].append(agent_msg)
+        session["updated_at"] = get_timestamp()
+
+        # 推送流完成消息
+        await send_to_websocket(chat_id, {
+            "type": "stream_complete",
+            "message": agent_msg,
+            "updated_at": session["updated_at"]
+        })
+
+        print(f"[API] 智能体流式发言已完成: chat_id={chat_id}")
     except Exception as e:
         print(f"[API] 后台处理智能体发言失败: {e}")
+        import traceback
+        traceback.print_exc()
         # 推送错误消息到前端
         await send_to_websocket(chat_id, {
             "type": "error",

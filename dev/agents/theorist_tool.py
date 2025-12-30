@@ -1,7 +1,7 @@
 # agents/theorist_tool.py
 from __future__ import annotations
 
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Callable
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import BaseMessage
@@ -150,6 +150,119 @@ def theorist_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
     hooks: List[Hook] = []
 
     # 线索：理论家常见“澄清/边界”信号
+    if any(k in utterance for k in ["需要区分", "边界", "前提", "关键变量", "判断标准", "换句话说", "从概念上讲"]):
+        hooks.append(Hook(kind="clarify", content="提出概念澄清/边界条件/判断标准"))
+
+    q = _extract_last_question(utterance)
+    if q:
+        hooks.append(Hook(kind="new_question", content=q))
+
+    return CompanionSpeakOutput(
+        speaker="理论家",
+        utterance=utterance,
+        hooks=hooks,
+    )
+
+
+async def theorist_speak_stream(req: CompanionSpeakInput, stream_callback: Callable) -> CompanionSpeakOutput:
+    """
+    理论家工具流式版本：实时推送内容片段到前端
+    """
+    # 1) 把最近公开发言转成 messages
+    history: List[BaseMessage] = events_to_messages(req.transcript_tail)
+
+    # 2) 组织内部"本轮任务卡片"
+    active_q = _active_question_from_state(req.state)
+    tic = pick_tic(req.style)
+    taboos = taboos_text(req.style)
+
+    context_card = f"""
+【讨论状态】
+- 当前话题：{req.state.topic}
+- 当前焦点：{active_q or "（主持人尚未明确焦点/或暂不需要聚焦）"}
+- 主持人给你的任务提示：{req.task_hint or "（无）"}
+- 你的立场提示：{req.stance_hint or "（无）"}
+- 你的表达气质：{req.style.vibe}
+- 可选口头禅：{tic or "（无）"}
+- 禁忌：{taboos}
+
+【最重要的优先级】
+1. 如果最近一轮是【用户】发言，你必须优先回应用户的具体问题或观点！
+2. 用户参与这个讨论是为了得到有价值的回应，不要忽略用户的需求
+3. 你的回应应该让用户感觉"被听到了"和"被理解了"
+
+【重要提醒】
+- 必须回应最近1-2轮发言中的具体观点或问题
+- 避免重复之前已经讨论过的内容
+- 如果前面有案例或具体说法，请从中提炼理论要点
+- 不要重新解释基础概念，而是在原有讨论基础上深化
+- CRITICAL: 你的发言必须与前面某人的观点产生直接对话关系！
+
+【发言要求】
+请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准）。
+如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
+不要回到题目开头做总述，不要写清单/小标题/套话。
+输出1~2段口语自然段即可。
+"""
+
+    # 3) 流式生成
+    prompt_messages = _prompt.invoke({"history": history, "context_card": context_card})
+    full_content = ""
+
+    async for chunk in llm_theorist.astream(prompt_messages):
+        content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+        if content:
+            full_content += content
+            # 实时推送到WebSocket
+            try:
+                await stream_callback({
+                    "type": "stream_chunk",
+                    "role": "theorist",
+                    "speaker": "理论家",
+                    "content": content
+                })
+            except Exception as e:
+                print(f"[ERROR] 流式推送失败: {e}")
+
+    # 4) 清理文本
+    utterance = clean_text(full_content)
+
+    # 5) 反模板检查（如果检测到模板化，重新流式生成）
+    if is_templated(utterance):
+        rewrite_card = build_rewrite_context(utterance)
+        rewrite_messages = _prompt.invoke({"history": history, "context_card": rewrite_card})
+        full_content = ""
+
+        async for chunk in llm_theorist.astream(rewrite_messages):
+            content = chunk.content if hasattr(chunk, 'content') else str(chunk)
+            if content:
+                full_content += content
+                try:
+                    await stream_callback({
+                        "type": "stream_chunk",
+                        "role": "theorist",
+                        "speaker": "理论家",
+                        "content": content
+                    })
+                except Exception as e:
+                    print(f"[ERROR] 重写流式推送失败: {e}")
+
+        utterance = clean_text(full_content)
+
+    # 6) 推送流结束信号
+    try:
+        await stream_callback({
+            "type": "stream_end",
+            "role": "theorist",
+            "speaker": "理论家",
+            "full_content": utterance
+        })
+    except Exception as e:
+        print(f"[ERROR] 流结束信号推送失败: {e}")
+
+    # 7) hooks
+    hooks: List[Hook] = []
+
     if any(k in utterance for k in ["需要区分", "边界", "前提", "关键变量", "判断标准", "换句话说", "从概念上讲"]):
         hooks.append(Hook(kind="clarify", content="提出概念澄清/边界条件/判断标准"))
 
