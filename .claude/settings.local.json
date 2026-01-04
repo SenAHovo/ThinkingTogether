@@ -25,7 +25,14 @@
       "Bash(ls:*)",
       "Bash(copy:*)",
       "Bash(if exist:*)",
-      "Bash(powershell:*)"
+      "Bash(powershell:*)",
+      "Bash(move:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(docker-compose:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker images:*)",
+      "Bash(docker tag:*)",
+      "Bash(docker:*)"
     ],
     "deny": [],
     "ask": []
