@@ -6,7 +6,7 @@
         <div class="logo">智炬</div>
         <div class="title">
           <div class="name">智炬五维</div>
-          <div class="sub">多智能体协同学习 · 前端 Demo</div>
+          <div class="sub">多智能体协同学习</div>
         </div>
         <button class="newChatBtn" @click="goToHomePage" title="开启新对话">+</button>
       </div>

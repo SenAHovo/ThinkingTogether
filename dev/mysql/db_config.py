@@ -6,15 +6,17 @@
 import os
 from typing import Dict, Any
 
+from dotenv import load_dotenv
 
+load_dotenv()
 # 数据库配置
 DB_CONFIG = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'root',
-    'database': 'thinking_together',
-    'port': 3306,
-    'charset': 'utf8mb4'
+    'host': os.getenv('DB_HOST'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'database': os.getenv('DB_NAME'),
+    'port': os.getenv('DB_PORT'),
+    'charset': os.getenv('DB_CHARSET'),
 }
 
 

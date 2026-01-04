@@ -1,0 +1,53 @@
+成功连接到数据库: tk @ localhost:3306
+[持久化存储] 数据库连接成功
+成功连接到数据库: tk @ localhost:3306
+[持久化存储] 状态存储：数据库连接成功
+成功连接到数据库: tk @ localhost:3306
+[持久化存储] 数据库连接成功
+[持久化存储] 数据库连接成功，使用数据库存储
+[API] 数据库连接成功，将支持历史对话加载和用户认证
+[API] 验证码管理器初始化成功
+成功连接到数据库: tk @ localhost:3306
+[违禁词] 成功加载 0 个违禁词到Trie树
+=== 智炬五维协同学习系统 API 服务器 ===
+正在启动服务器...
+INFO:     Started server process [43196]
+INFO:     Waiting for application startup.
+[API] 应用启动中...
+[API] 从数据库加载了 0 个历史对话
+
+==================================================
+[OK] 服务器启动成功！
+==================================================
+API地址:  http://localhost:8000
+API文档:  http://localhost:8000/docs
+WebSocket: ws://localhost:8000/ws/chat/{chat_id}
+==================================================
+
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     127.0.0.1:51748 - "OPTIONS /api/public/chats?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "OPTIONS /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "OPTIONS /api/public/chats?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "OPTIONS /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "GET /api/public/chats?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "GET /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "GET /api/public/chats?limit=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "GET /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "GET /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "GET /api/chats?limit=50 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "OPTIONS /api/admin/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "OPTIONS /api/admin/publication-requests?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65023 - "OPTIONS /api/admin/dashboard-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61777 - "OPTIONS /api/admin/comments/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "OPTIONS /api/admin/comments?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50362 - "OPTIONS /api/admin/banned-words HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63403 - "GET /api/admin/users HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50362 - "GET /api/admin/publication-requests?status=pending HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61777 - "GET /api/admin/dashboard-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65023 - "GET /api/admin/comments/stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51748 - "GET /api/admin/comments?page=1&page_size=20 HTTP/1.1" 200 OK
+[API] 获取违禁词列表成功，共 0 条
+INFO:     127.0.0.1:58857 - "GET /api/admin/banned-words HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58857 - "OPTIONS /api/admin/top-public-chats?limit=3 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58857 - "GET /api/admin/top-public-chats?limit=3 HTTP/1.1" 200 OK

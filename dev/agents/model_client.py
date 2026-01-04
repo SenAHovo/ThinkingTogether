@@ -14,10 +14,10 @@ llm_organizer = ChatZhipuAI(
     api_key=os.getenv("ZHIPU_API_KEY"),
     temperature=0.5,
 )
-llm_theorist = ChatOpenAI(
-    model=os.getenv("MODEL_NAME"),
-    api_key=os.getenv("API_KEY"),
-    base_url=os.getenv("BASE_URL"),
+# 理论家使用智谱AI（与组织者相同，避免使用失效的代理地址）
+llm_theorist = ChatZhipuAI(
+    model=os.getenv("ZHIPU_MODEL_NAME"),
+    api_key=os.getenv("ZHIPU_API_KEY"),
     temperature=0.5,
 )
 

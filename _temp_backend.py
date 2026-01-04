@@ -1,8 +1,4 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-"""
-智炬五维后端服务器启动脚本
-"""
+
 import sys
 import os
 import uvicorn
@@ -14,13 +10,9 @@ sys.path.insert(0, project_root)
 # 导入应用
 from dev.api.server import app
 
-
-def main():
-    """主函数"""
+if __name__ == "__main__":
     print("=== 智炬五维协同学习系统 API 服务器 ===")
     print("正在启动服务器...")
-    print()
-
     try:
         uvicorn.run(
             app,
@@ -30,7 +22,3 @@ def main():
         )
     except KeyboardInterrupt:
         print("\n服务器已停止")
-
-
-if __name__ == "__main__":
-    main()
