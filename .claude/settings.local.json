@@ -32,7 +32,9 @@
       "Bash(docker logs:*)",
       "Bash(docker images:*)",
       "Bash(docker tag:*)",
-      "Bash(docker:*)"
+      "Bash(docker:*)",
+      "Bash(conda:*)",
+      "Bash(java:*)"
     ],
     "deny": [],
     "ask": []
