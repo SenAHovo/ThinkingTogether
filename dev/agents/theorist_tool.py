@@ -36,6 +36,9 @@ _THEORIST_SYS = """
 - **现状分析**：梳理形成机制、关键要素、发展阶段
 - **未来趋势**：识别驱动因素、演变逻辑、可能路径
 - **学习概念**：构建知识框架、理解核心原理、建立认知体系
+- **课程学习**：梳理知识体系、设计学习路径、串联相关概念、识别前置知识
+- **编程问题**：分析架构设计、提炼设计模式、探讨算法原理、抽象系统模型
+- **科学探索**：构建理论框架、提炼科学假设、分析因果机制、建立解释模型
 
 你的自然倾向：
 - 先把"概念、边界条件、判断标准、关键变量"讲清楚
@@ -49,8 +52,8 @@ _THEORIST_SYS = """
 - 不要用"以下是/主要包括/综上/总之/首先其次最后"这类套话
 - 不要做全面盘点，不要把话题从头讲一遍
 
-你要做的事：基于"最近讨论发言"继续往下推进，抓住其中一个具体细节展开。
-输出：1~2段中文口语自然段即可。
+你要做的事：基于"最近讨论发言"继续往下推进，抓住其中一个具体细节展开，充分表达你的想法。
+输出：2~4段中文口语自然段，让理论观点更充分地展开。
 """
 
 
@@ -132,10 +135,10 @@ def theorist_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 - CRITICAL: 你的发言必须与前面某人的观点产生直接对话关系！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准）。
+请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准），充分展开你的分析。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的理论分析更加深入和完整。
 """
 
     # 3) 生成
@@ -199,10 +202,10 @@ async def theorist_speak_stream(req: CompanionSpeakInput, stream_callback: Calla
 - CRITICAL: 你的发言必须与前面某人的观点产生直接对话关系！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准）。
+请基于"最近讨论发言"继续往下说：抓住一个具体点推进（概念/边界/变量/判断标准），充分展开你的分析。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的理论分析更加深入和完整。
 """
 
     # 3) 流式生成
@@ -229,8 +232,20 @@ async def theorist_speak_stream(req: CompanionSpeakInput, stream_callback: Calla
 
     # 5) 反模板检查（如果检测到模板化，重新流式生成）
     if is_templated(utterance):
+        print("[理论家] 检测到模板化内容，触发重写...")
         rewrite_card = build_rewrite_context(utterance)
         rewrite_messages = _prompt.invoke({"history": history, "context_card": rewrite_card})
+
+        # 发送重写开始信号，让前端知道要替换内容
+        try:
+            await stream_callback({
+                "type": "stream_rewrite_start",
+                "role": "theorist",
+                "speaker": "理论家"
+            })
+        except Exception as e:
+            print(f"[ERROR] 重写开始信号推送失败: {e}")
+
         full_content = ""
 
         async for chunk in llm_theorist.astream(rewrite_messages):
@@ -248,6 +263,7 @@ async def theorist_speak_stream(req: CompanionSpeakInput, stream_callback: Calla
                     print(f"[ERROR] 重写流式推送失败: {e}")
 
         utterance = clean_text(full_content)
+        print(f"[理论家] 重写完成，新内容长度: {len(utterance)}")
 
     # 6) 推送流结束信号
     try:

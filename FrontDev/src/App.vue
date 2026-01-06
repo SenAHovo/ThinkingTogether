@@ -1301,6 +1301,15 @@ function setupWebSocket(chatId) {
           console.log('[WebSocket] 流式消息已创建:', msgId);
         }
 
+      } else if (data.type === 'stream_rewrite_start') {
+        // 重写开始：清空当前流式消息的内容
+        const streamingMsg = chat.messages.find(m => m.isStreaming);
+        if (streamingMsg) {
+          console.log('[WebSocket] 检测到重写，清空当前内容，原长度:', streamingMsg.content.length);
+          streamingMsg.text = '';
+          streamingMsg.content = '';
+        }
+
       } else if (data.type === 'stream_chunk') {
         // 流式片段：追加内容
         const msgId = data.message_id || data.message?.message_id;
@@ -1317,15 +1326,22 @@ function setupWebSocket(chatId) {
         }
 
       } else if (data.type === 'stream_end') {
-        // 流结束：更新完整内容
+        // 流结束：只标记完成状态，不覆盖流式累积的内容
         const msgId = data.message_id || data.message?.message_id;
         const msg = chat.messages.find(m => m.id === msgId);
 
         if (msg) {
-          msg.text = data.full_content;
-          msg.content = data.full_content;
+          // 不覆盖内容，保留流式过程中累积的完整内容
+          // 只有当后端返回的内容更长时才更新
+          const newContent = data.full_content || '';
+          if (newContent.length > msg.content.length) {
+            msg.text = newContent;
+            msg.content = newContent;
+            console.log('[WebSocket] 流式消息已完成，更新为更长内容:', msgId, newContent.length, '字符');
+          } else {
+            console.log('[WebSocket] 流式消息已完成，保留流式内容:', msgId, msg.content.length, '字符');
+          }
           msg.isStreaming = false;
-          console.log('[WebSocket] 流式消息已完成:', msgId);
         }
 
       } else if (data.type === 'stream_complete') {
@@ -1334,12 +1350,18 @@ function setupWebSocket(chatId) {
         const msg = chat.messages.find(m => m.id === msgId);
 
         if (msg) {
-          // 更新消息内容
-          msg.text = data.message.content;
-          msg.content = data.message.content;
+          // 不覆盖内容，保留流式过程中累积的完整内容
+          // 只有当后端返回的内容更长时才更新
+          const newContent = data.message.content || '';
+          if (newContent.length > msg.content.length) {
+            msg.text = newContent;
+            msg.content = newContent;
+            console.log('[WebSocket] 流式消息最终完成，更新为更长内容:', newContent.length, '字符');
+          } else {
+            console.log('[WebSocket] 流式消息最终完成，保留流式内容:', msg.content.length, '字符');
+          }
           msg.isStreaming = false;
           chat.updatedAt = data.updated_at || stamp();
-          console.log('[WebSocket] 流式消息最终完成:', data.message.content.length, '字符');
         }
 
       } else if (data.type === 'new_message') {

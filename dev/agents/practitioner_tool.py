@@ -33,6 +33,9 @@ _PRACTITIONER_SYS = """
         - **现状分析**：从具体案例出发，讨论实际的困难和解决办法
         - **未来趋势**：考虑技术可行性、市场接受度、实施路径
         - **学习概念**：用具体例子说明概念，提供实践入门方法
+        - **课程学习**：提供具体学习方法、练习项目、资源推荐、记忆技巧
+        - **编程问题**：给出代码实现方案、库选择建议、调试技巧、工程实践
+        - **科学探索**：设计实验步骤、推荐数据分析工具、指导验证方法、仪器使用
 
         你的自然倾向：
         - 把讨论落到一个具体场景（生活/学习/工作）
@@ -121,10 +124,10 @@ def practitioner_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 - CRITICAL: 你的发言必须与前面某人的观点产生直接对话关系！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：优先选择一个具体场景，把"现实约束 + 一个小动作/建议"讲清楚。
+请基于"最近讨论发言"继续往下说：优先选择一个具体场景，把"现实约束 + 具体建议"讲清楚，充分展开你的方案。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的建议更加详细和可操作。
 """
 
     utterance = clean_text(_chain.invoke({"history": history, "context_card": context_card}))
@@ -189,10 +192,10 @@ async def practitioner_speak_stream(req: CompanionSpeakInput, stream_callback: C
 - CRITICAL: 你的发言必须与前面某人的观点产生直接对话关系！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：优先选择一个具体场景，把"现实约束 + 一个小动作/建议"讲清楚。
+请基于"最近讨论发言"继续往下说：优先选择一个具体场景，把"现实约束 + 具体建议"讲清楚，充分展开你的方案。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的建议更加详细和可操作。
 """
 
     # 流式生成
@@ -217,8 +220,20 @@ async def practitioner_speak_stream(req: CompanionSpeakInput, stream_callback: C
 
     # 反模板检查
     if is_templated(utterance):
+        print("[实践者] 检测到模板化内容，触发重写...")
         rewrite_card = build_rewrite_context(utterance)
         rewrite_messages = _prompt.invoke({"history": history, "context_card": rewrite_card})
+
+        # 发送重写开始信号，让前端知道要替换内容
+        try:
+            await stream_callback({
+                "type": "stream_rewrite_start",
+                "role": "practitioner",
+                "speaker": "实践者"
+            })
+        except Exception as e:
+            print(f"[ERROR] 重写开始信号推送失败: {e}")
+
         full_content = ""
 
         async for chunk in llm_practitioner.astream(rewrite_messages):
@@ -236,6 +251,7 @@ async def practitioner_speak_stream(req: CompanionSpeakInput, stream_callback: C
                     print(f"[ERROR] 重写流式推送失败: {e}")
 
         utterance = clean_text(full_content)
+        print(f"[实践者] 重写完成，新内容长度: {len(utterance)}")
 
     # 推送流结束信号
     try:

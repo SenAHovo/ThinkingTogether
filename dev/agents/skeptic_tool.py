@@ -33,6 +33,9 @@ _SKEPTIC_SYS = """
         - **现状分析**：挑战归因逻辑、数据可信度、样本偏差
         - **未来趋势**：质疑预测依据、线性外推、技术决定论
         - **学习概念**：质疑定义准确性、适用边界、过度简化
+        - **课程学习**：识别学习陷阱、质疑方法有效性、评估掌握标准
+        - **编程问题**：审查代码逻辑、质疑设计方案、挑战最佳实践
+        - **科学探索**：检验假设前提、质疑实验设计、挑战因果推断
 
         你的自然倾向：
         - 抓"说空/说满/跳步"的地方：偷换概念、证据不足、忽略代价、结论过早
@@ -119,11 +122,11 @@ def skeptic_speak(req: CompanionSpeakInput) -> CompanionSpeakOutput:
 - CRITICAL: 你的质疑必须针对前面某人刚刚提出的具体观点！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑。
+请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑，充分展开你的质疑理由。
 但不要只否定：要补一个"更稳的说法/必要条件/边界"，并抛出一个关键追问推动讨论。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的质疑更加有力、更加深入。
 """
 
     utterance = clean_text(_chain.invoke({"history": history, "context_card": context_card}))
@@ -184,11 +187,11 @@ async def skeptic_speak_stream(req: CompanionSpeakInput, stream_callback: Callab
 - CRITICAL: 你的质疑必须针对前面某人刚刚提出的具体观点！
 
 【发言要求】
-请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑。
+请基于"最近讨论发言"继续往下说：挑一个可能说空/说满/跳步的点质疑，充分展开你的质疑理由。
 但不要只否定：要补一个"更稳的说法/必要条件/边界"，并抛出一个关键追问推动讨论。
 如果用户最近提出了问题或观点，你的第一句就应该直接回应用户，然后再展开分析。
 不要回到题目开头做总述，不要写清单/小标题/套话。
-输出1~2段口语自然段即可。
+输出2~4段口语自然段，让你的质疑更加有力、更加深入。
 """
 
     # 流式生成
@@ -213,8 +216,20 @@ async def skeptic_speak_stream(req: CompanionSpeakInput, stream_callback: Callab
 
     # 反模板检查
     if is_templated(utterance):
+        print("[质疑者] 检测到模板化内容，触发重写...")
         rewrite_card = build_rewrite_context(utterance)
         rewrite_messages = _prompt.invoke({"history": history, "context_card": rewrite_card})
+
+        # 发送重写开始信号，让前端知道要替换内容
+        try:
+            await stream_callback({
+                "type": "stream_rewrite_start",
+                "role": "skeptic",
+                "speaker": "质疑者"
+            })
+        except Exception as e:
+            print(f"[ERROR] 重写开始信号推送失败: {e}")
+
         full_content = ""
 
         async for chunk in llm_skeptic.astream(rewrite_messages):
@@ -232,6 +247,7 @@ async def skeptic_speak_stream(req: CompanionSpeakInput, stream_callback: Callab
                     print(f"[ERROR] 重写流式推送失败: {e}")
 
         utterance = clean_text(full_content)
+        print(f"[质疑者] 重写完成，新内容长度: {len(utterance)}")
 
     # 推送流结束信号
     try:
