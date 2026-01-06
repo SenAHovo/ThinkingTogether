@@ -34,7 +34,8 @@
       "Bash(docker tag:*)",
       "Bash(docker:*)",
       "Bash(conda:*)",
-      "Bash(java:*)"
+      "Bash(java:*)",
+      "Bash(start test_carousel.html)"
     ],
     "deny": [],
     "ask": []

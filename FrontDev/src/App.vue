@@ -24,7 +24,9 @@
             class="publicChatItem"
             @click="showPublicChatsModule"
           >
-            <div class="publicChatTitle">{{ publicChats[currentPublicChatIndex].title }}</div>
+            <div class="publicChatTitle" :title="publicChats[currentPublicChatIndex].title">
+              {{ truncateTitle(publicChats[currentPublicChatIndex].title, 15) }}
+            </div>
             <div class="publicChatMeta">
               <span class="like-count">❤️ {{ publicChats[currentPublicChatIndex].like_count || 0 }}</span>
               <span>·</span>
@@ -1041,25 +1043,8 @@ onMounted(async () => {
   // 初始化主题
   initTheme();
 
-  // 加载公开对话大厅（添加示例数据）
+  // 加载公开对话大厅
   await loadPublicChats();
-  // 添加示例公开对话（用于展示效果）
-  if (publicChats.value.length === 0) {
-    publicChats.value = [
-      {
-        id: 'example-1',
-        title: '示例：如何高效学习人工智能？',
-        like_count: 128,
-        updatedAt: '12/20 10:30'
-      },
-      {
-        id: 'example-2',
-        title: '示例：多智能体协同的优势与挑战',
-        like_count: 96,
-        updatedAt: '12/21 14:22'
-      }
-    ];
-  }
   // 启动轮播
   startCarousel();
 
@@ -1319,12 +1304,16 @@ function setupWebSocket(chatId) {
       } else if (data.type === 'stream_chunk') {
         // 流式片段：追加内容
         const msgId = data.message_id || data.message?.message_id;
-        const streamingMsg = chat.messages.find(m => m.id === msgId || m.isStreaming);
+        const streamingMsg = chat.messages.find(m => m.id === msgId);
 
         if (streamingMsg) {
           streamingMsg.text += data.content;
           streamingMsg.content += data.content;
-          console.log('[WebSocket] 流式片段已追加，长度:', streamingMsg.text.length);
+          console.log('[WebSocket] 流式片段已追加:', data.content.length, '字符');
+          // 立即滚动到底部以显示新内容
+          nextTick(() => scrollToBottom());
+        } else {
+          console.warn('[WebSocket] 未找到流式消息:', msgId);
         }
 
       } else if (data.type === 'stream_end') {
@@ -1350,7 +1339,7 @@ function setupWebSocket(chatId) {
           msg.content = data.message.content;
           msg.isStreaming = false;
           chat.updatedAt = data.updated_at || stamp();
-          console.log('[WebSocket] 流式消息最终完成:', data.message);
+          console.log('[WebSocket] 流式消息最终完成:', data.message.content.length, '字符');
         }
 
       } else if (data.type === 'new_message') {
@@ -2380,12 +2369,25 @@ function applyTheme(themeMode) {
 // ========== 公开对话相关 ==========
 
 /**
+ * 截断标题，超过指定长度显示省略号
+ * @param {string} title - 标题文本
+ * @param {number} maxLength - 最大长度
+ * @returns {string} 截断后的标题
+ */
+function truncateTitle(title, maxLength = 15) {
+  if (!title) return '';
+  if (title.length <= maxLength) return title;
+  return title.substring(0, maxLength) + '...';
+}
+
+/**
  * 加载公开对话大厅
  */
 async function loadPublicChats() {
   try {
     const result = await apiClient.getPublicChatHall(20);
-    publicChats.value = result.chats || [];
+    // 只取前3个对话用于轮播展示
+    publicChats.value = (result.chats || []).slice(0, 3);
   } catch (err) {
     console.error('加载公开对话失败:', err);
   }
@@ -4271,6 +4273,9 @@ html, body {
   font-size: 14px;
   margin-bottom: 6px;
   line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .publicChatMeta {

@@ -791,6 +791,11 @@ async def process_user_message_in_background(chat_id: str, session: Dict[str, An
 
         async def stream_callback(chunk_data: dict):
             """流式回调函数，实时推送到前端"""
+            # 为流式数据添加 message_id，确保前端能找到正确的消息对象
+            if chunk_data.get("type") in ["stream_chunk", "stream_end"]:
+                chunk_data["message_id"] = message_id
+                content = chunk_data.get('content', '')
+                print(f"[API-用户消息] 流式输出: type={chunk_data.get('type')}, length={len(content)}, preview='{content[:30]}'...")
             await send_to_websocket(chat_id, chunk_data)
 
         # 3. 调用智能体流式回应用户
@@ -1765,6 +1770,9 @@ async def process_agent_in_background(chat_id: str, session: Dict[str, Any]):
         task_hint = decision["task_hint"]
         stance_hint = decision.get("stance_hint")
 
+        # 调试日志：确认路由决策
+        print(f"[API] 组织者路由决策: next_speaker={next_speaker}, task_hint={task_hint[:50]}...")
+
         # 创建消息ID
         message_id = uuid.uuid4().hex
         role_id_map = {
@@ -1774,16 +1782,22 @@ async def process_agent_in_background(chat_id: str, session: Dict[str, Any]):
             "组织者": "facilitator",
         }
 
+        # 确认映射正确
+        author_id = role_id_map.get(next_speaker, "theorist")
+        print(f"[API] 智能体映射: {next_speaker} -> {author_id}")
+
         # 创建临时AI消息对象
         temp_ai_msg = {
             "message_id": message_id,
             "chat_id": chat_id,
-            "author_id": role_id_map.get(next_speaker, "theorist"),
+            "author_id": author_id,
             "author_name": next_speaker,
             "content": "",
             "timestamp": get_current_time(),
             "role": next_speaker,
         }
+
+        print(f"[API] 开始流式生成: speaker={next_speaker}, message_id={message_id}, author_id={author_id}")
 
         # 推送流开始消息
         await send_to_websocket(chat_id, {
@@ -1793,9 +1807,15 @@ async def process_agent_in_background(chat_id: str, session: Dict[str, Any]):
 
         async def stream_callback(chunk_data: dict):
             """流式回调函数，实时推送到前端"""
+            # 为流式数据添加 message_id，确保前端能找到正确的消息对象
+            if chunk_data.get("type") in ["stream_chunk", "stream_end"]:
+                chunk_data["message_id"] = message_id
+                content = chunk_data.get('content', '')
+                print(f"[API-继续对话] 流式输出: type={chunk_data.get('type')}, length={len(content)}, preview='{content[:30]}'...")
             await send_to_websocket(chat_id, chunk_data)
 
         # 调用流式智能体
+        print(f"[API] 调用流式智能体: next_speaker={next_speaker}")
         utterance = await call_companion_stream_async(
             next_speaker,
             state,
@@ -1804,6 +1824,7 @@ async def process_agent_in_background(chat_id: str, session: Dict[str, Any]):
             6,
             stream_callback
         )
+        print(f"[API] 流式智能体响应完成: speaker={next_speaker}, content_length={len(utterance)}")
 
         # 记录发言
         history_store.record_speaker(state.thread_id, next_speaker, utterance)
@@ -2036,9 +2057,10 @@ async def summarize_chat(chat_id: str):
     session["updated_at"] = get_timestamp()
 
     # 对话继续进行，状态保持为 discussion
-    # 返回消息列表（包含新增的总结消息）
+    # 只返回新增的总结消息，而不是完整的消息列表
+    # 这样可以避免前端重复显示用户消息
     return {
-        "messages": session["messages"],
+        "messages": [summary_msg],  # 只返回新消息
         "updated_at": session["updated_at"]
     }
 

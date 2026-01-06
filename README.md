@@ -290,6 +290,13 @@ cd docker
 docker-compose up -d
 ```
 
+| 账号          | 密码      | 角色    |
+|-------------|---------|-------|
+| **spadmin** | spadmin | 超级管理员 |
+| **admin01** | admin01 | 管理员   |
+| **user01**  | 123123  | 用户    |
+| **user02**  | 123123  | 用户    |
+| **user03**  | 123123  | 用户    |
 ---
 
 ### 访问应用
@@ -491,51 +498,6 @@ docker-compose up -d
 # 4. 查看日志
 docker-compose logs -f
 ```
-
----
-
-## 🐳 Docker 部署指南
-
-### 使用Docker Hub镜像（推荐给用户）
-
-如果你已经将镜像推送到Docker Hub，用户可以按以下步骤快速部署：
-
-#### 前提条件
-- 已安装 Docker
-- 已安装 Docker Compose
-
-#### 部署步骤
-
-**1. 创建工作目录**
-```bash
-mkdir thinking-together
-cd thinking-together
-```
-
-**2. 下载配置文件**
-从项目中获取以下文件：
-- `docker-compose.yml`
-- `.env`
-
-**3. 拉取并启动容器**
-```bash
-# 拉取最新镜像
-docker pull your-username/thinking-together:latest
-
-# 启动服务
-docker-compose up -d
-```
-
-**5. 访问应用**
-- 前端界面：http://localhost
-- 后端API：http://localhost:8000
-- API文档：http://localhost:8000/docs
-
-**6. 停止服务**
-```bash
-docker-compose down
-```
-
 
 ---
 
