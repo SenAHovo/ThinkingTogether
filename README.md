@@ -59,7 +59,6 @@
 
 ```bash
 # 1. 克隆项目
-git init
 git clone https://github.com/SenAHovo/ThinkingTogether.git
 cd ThinkingTogether
 
